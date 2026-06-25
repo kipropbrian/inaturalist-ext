@@ -58,12 +58,16 @@
         "https://*.inaturalist.lu/observations/*",
         "https://*.www.naturalista.uy/observations/*"
       ],
+      "css": [
+        "similar-species.css"
+      ],
       "js": [
         "logging.js",
         "arrive-2.4.1.min.js",
         "cropper.min.js",
         "content-observation.js",
-        "content-score-crop.js"
+        "content-score-crop.js",
+        "content-identify-similar.js"
       ],
       "run_at": "document_start"
     },
@@ -110,6 +114,30 @@
         "content-taxa.js"
       ],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.inaturalist.org/identifications/*",
+        "https://*.inaturalist.nz/identifications/*",
+        "https://*.naturalista.mx/identifications/*",
+        "https://*.inaturalist.ca/identifications/*",
+        "https://*.biodiversity4all.org/identifications/*",
+        "https://inaturalist.ala.org.au/identifications/*",
+        "https://*.argentinat.org/identifications/*",
+        "https://*.inaturalist.mma.gob.cl/identifications/*",
+        "https://inaturalist.laji.fi/identifications/*",
+        "https://*.inaturalist.se/identifications/*",
+        "https://*.inaturalist.lu/identifications/*",
+        "https://*.www.naturalista.uy/identifications/*"
+      ],
+      "css": [
+        "identifications.css"
+      ],
+      "js": [
+        "logging.js",
+        "content-identifications.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [

@@ -10,6 +10,8 @@ function saveOptions() {
     const enableCopyGeo = document.getElementById('copy-geocoordinates').checked;
     const enableIdentifierStats = document.getElementById('identifier-stats').checked;
     const enableFilenameDate = document.getElementById('filename-date').checked;
+    const enableIdentificationExplorer = document.getElementById('identification-explorer').checked;
+    const enableSimilarSpeciesTab = document.getElementById('similar-species-tab').checked;
     const enableLogging = document.getElementById('enable-logging').checked;
     chrome.storage.sync.set({
         enableColorVision,
@@ -23,6 +25,8 @@ function saveOptions() {
         enableCopyGeo,
         enableIdentifierStats,
         enableFilenameDate,
+        enableIdentificationExplorer,
+        enableSimilarSpeciesTab,
         enableLogging
     }, function() {
         const status = document.getElementById('status');
@@ -32,7 +36,7 @@ function saveOptions() {
         }, 750);
     });
 }
-  
+
 function restoreOptions() {
     chrome.storage.sync.get({
         enableColorVision: true,
@@ -46,6 +50,8 @@ function restoreOptions() {
         enableCopyGeo: true,
         enableIdentifierStats: true,
         enableFilenameDate: true,
+        enableIdentificationExplorer: true,
+        enableSimilarSpeciesTab: true,
         enableLogging: false
     }, function(items) {
         document.getElementById('color-vision').checked = items.enableColorVision;
@@ -60,6 +66,8 @@ function restoreOptions() {
         document.getElementById('copy-geocoordinates').checked = items.enableCopyGeo;
         document.getElementById('identifier-stats').checked = items.enableIdentifierStats;
         document.getElementById('filename-date').checked = items.enableFilenameDate;
+        document.getElementById('identification-explorer').checked = items.enableIdentificationExplorer;
+        document.getElementById('similar-species-tab').checked = items.enableSimilarSpeciesTab;
         colorVisionFeature.dispatchEvent(new Event('change'));
         scoreImageFeature.dispatchEvent(new Event('change'));
     });

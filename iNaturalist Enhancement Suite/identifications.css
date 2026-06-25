@@ -1,0 +1,588 @@
+/* ── Identification search toolbar ───────────────────────────────────────── */
+
+#inat-id-toolbar {
+	margin: 0 0 20px;
+	font-family: inherit;
+	font-size: 13px;
+	color: #333;
+}
+
+.inat-id-panel {
+	background: linear-gradient(135deg, #fbfdf8 0%, #f4f8ec 100%);
+	border: 1px solid #d2e3ab;
+	border-radius: 8px;
+	padding: 16px 18px;
+	box-shadow: 0 4px 12px rgba(116, 172, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.02);
+	transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+/* ── Form row & Aligned Layout ───────────────────────────────────────────── */
+
+.inat-id-fields {
+	display: flex;
+	align-items: flex-end;
+	flex-wrap: wrap;
+	gap: 12px 14px;
+}
+
+.inat-id-field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+}
+
+.inat-id-field--taxon {
+	flex: 2 1 220px;
+}
+
+.inat-id-field--category {
+	flex: 1 1 150px;
+}
+
+.inat-id-field--check {
+	flex: 0 0 auto;
+}
+
+.inat-id-field--btns {
+	flex: 0 0 auto;
+}
+
+.inat-id-field > label:not(.inat-id-check-label) {
+	font-size: 11px;
+	font-weight: 700;
+	color: #666;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	line-height: 14px;
+	margin: 0;
+}
+
+.inat-id-label-spacer {
+	height: 14px;
+	display: block;
+}
+
+/* ── Inputs & selects ────────────────────────────────────────────────────── */
+
+#inat-id-toolbar input[type="text"],
+#inat-id-toolbar select {
+	font: inherit;
+	font-size: 13px;
+	height: 34px;
+	padding: 0 10px;
+	border: 1px solid #c0c0c0;
+	border-radius: 4px;
+	background: #fff;
+	color: #333;
+	box-sizing: border-box;
+	width: 100%;
+	transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+#inat-id-toolbar input[type="text"]:focus,
+#inat-id-toolbar select:focus {
+	outline: none;
+	border-color: #74ac00;
+	box-shadow: 0 0 0 3px rgba(116, 172, 0, 0.15);
+}
+
+/* ── Autocomplete ────────────────────────────────────────────────────────── */
+
+.inat-id-ac-wrap {
+	position: relative;
+}
+
+#inat-id-ac {
+	position: absolute;
+	top: calc(100% + 4px);
+	left: 0;
+	right: 0;
+	z-index: 9999;
+	list-style: none;
+	margin: 0;
+	padding: 4px 0;
+	background: #fff;
+	border: 1px solid #b7ce85;
+	border-radius: 6px;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+	max-height: 280px;
+	overflow-y: auto;
+}
+
+#inat-id-ac li {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 12px;
+	cursor: pointer;
+	outline: none;
+	transition: background-color 0.1s ease;
+}
+
+#inat-id-ac li:hover,
+#inat-id-ac li:focus {
+	background: #f1f7e7;
+}
+
+.inat-ac-text {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-width: 0;
+}
+
+.inat-ac-primary {
+	font-size: 13px;
+	font-weight: 600;
+	color: #2b5e08;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.inat-ac-secondary {
+	font-size: 11px;
+	font-style: italic;
+	color: #666;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.inat-ac-rank {
+	font-size: 10.5px;
+	color: #999;
+	text-transform: capitalize;
+	flex-shrink: 0;
+	font-style: italic;
+}
+
+/* ── Checkbox ────────────────────────────────────────────────────────────── */
+
+.inat-id-check-label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 34px;
+	cursor: pointer;
+	white-space: nowrap;
+	user-select: none;
+	font-size: 13px;
+	color: #333;
+}
+
+.inat-id-check-label input[type="checkbox"] {
+	width: 16px;
+	height: 16px;
+	accent-color: #74ac00;
+	cursor: pointer;
+	flex-shrink: 0;
+	margin: 0;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+
+.inat-id-btn-group {
+	display: flex;
+	gap: 6px;
+	height: 34px;
+}
+
+#inat-id-toolbar button {
+	font: inherit;
+	font-size: 13px;
+	height: 34px;
+	padding: 0 16px;
+	border-radius: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+	border: 1px solid;
+	flex-shrink: 0;
+	box-sizing: border-box;
+	transition: background-color 0.15s, border-color 0.15s, transform 0.1s, box-shadow 0.15s;
+}
+
+#inat-id-btn-search {
+	background: #74ac00;
+	color: #fff;
+	border-color: #74ac00;
+	font-weight: 600;
+}
+
+#inat-id-btn-search:hover {
+	background: #629400;
+	border-color: #629400;
+	box-shadow: 0 2px 6px rgba(116, 172, 0, 0.25);
+}
+
+#inat-id-btn-search:active {
+	transform: scale(0.98);
+}
+
+#inat-id-btn-clear {
+	background: #fff;
+	color: #555;
+	border-color: #c0c0c0;
+}
+
+#inat-id-btn-clear:hover {
+	background: #fafafa;
+	border-color: #a8a8a8;
+	color: #333;
+}
+
+#inat-id-btn-clear:active {
+	transform: scale(0.98);
+}
+
+/* ── Status Alerts ───────────────────────────────────────────────────────── */
+
+#inat-id-status {
+	margin: 12px 0 0;
+	font-size: 12.5px;
+	padding: 8px 12px;
+	border-radius: 5px;
+	font-weight: 500;
+	line-height: 1.4;
+}
+
+.inat-id-status--loading {
+	background: #f4f8ec;
+	border: 1px solid #d2e3ab;
+	color: #4f7200;
+}
+
+.inat-id-status--error {
+	background: #fdf2f2;
+	border: 1px solid #fbd5d5;
+	color: #9b1c1c;
+}
+
+.inat-id-status--warn {
+	background: #fdf8e6;
+	border: 1px solid #fcebbd;
+	color: #723b11;
+}
+
+.inat-id-status--info {
+	background: #f3f4f6;
+	border: 1px solid #e5e7eb;
+	color: #374151;
+}
+
+.inat-id-status-- {
+	background: #f3f4f6;
+	border: 1px solid #e5e7eb;
+	color: #374151;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   RESULTS — matching iNaturalist's two-column observation/identification
+   layout from .observationcol + .identificationcol
+═══════════════════════════════════════════════════════════════════════════ */
+
+.inat-id-empty {
+	margin: 10px 0 0;
+	color: #777;
+	font-size: 13px;
+}
+
+/* List wrapper — matches the unstyled observation list iNat renders */
+.inat-id-list {
+	list-style: none;
+	margin: 12px 0 0;
+	padding: 0;
+}
+
+/* Each result: side-by-side two-column card, like iNat's .row pair */
+.inat-id-card {
+	display: grid;
+	grid-template-columns: minmax(280px, 1.25fr) 100px minmax(320px, 1.4fr);
+	gap: 14px;
+	align-items: start;
+	border: 0;
+	border-bottom: 1px solid #e5e5e5;
+	border-radius: 0;
+	background: #fff;
+	padding: 10px 0 12px;
+	margin: 0;
+}
+
+.inat-id-card--withdrawn {
+	opacity: 0.65;
+}
+
+/* ── Observation column (left) ───────────────────────────────────────────── */
+
+.inat-obs-col {
+	min-width: 0;
+}
+
+.inat-iconic {
+	width: 15px;
+	height: 15px;
+	flex-shrink: 0;
+	object-fit: contain;
+	margin-top: 2px;
+}
+
+/* quality grade badge — matching iNat's .research_grade_notice style */
+.inat-qg {
+	font-size: 12px;
+	padding: 2px 8px;
+	border-radius: 12px;
+}
+
+.inat-qg--research { background: #74ac00; color: #fff; }
+.inat-qg--needs_id { background: #f5a623; color: #fff; }
+.inat-qg--casual   { background: #aaa;    color: #fff; }
+
+/* observation square photo */
+.inat-obs-photo {
+	display: block;
+	width: 100px;
+	color: #337ab7;
+	text-decoration: none;
+}
+
+.inat-obs-photo img,
+.inat-obs-photo--empty {
+	display: block;
+	width: 100px;
+	height: 100px;
+	object-fit: cover;
+	background: #e8e8e8;
+}
+
+.inat-photo-count {
+	display: block;
+	margin-top: 4px;
+	font-size: 12px;
+}
+
+/* taxon name + attributes + view link */
+.inat-obs-body {
+	padding: 0;
+}
+
+.inat-obs-taxon {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	margin-bottom: 8px;
+}
+
+.inat-obs-taxon a {
+	text-decoration: none;
+	color: inherit;
+}
+
+.inat-obs-taxon a:hover { text-decoration: underline; }
+
+.inat-comname {
+	font-size: 15px;
+	font-weight: 400;
+	color: #5b9b00;
+}
+
+.inat-othernames {
+	font-size: 12px;
+	color: #777;
+	margin-left: 3px;
+}
+
+.inat-sciname {
+	font-style: italic;
+}
+
+/* attribute rows: Observer / Date / Place */
+.inat-obs-attr {
+	font-size: 13px;
+	color: #555;
+	line-height: 1.55;
+	padding-left: 25px;
+}
+
+.inat-obs-attr a {
+	color: #555;
+	text-decoration: none;
+}
+
+.inat-obs-attr a:hover { text-decoration: underline; }
+
+.inat-attr-label {
+	display: inline-block;
+	width: 76px;
+	font-weight: 400;
+	font-style: italic;
+	color: #888;
+	font-size: 13px;
+	text-transform: none;
+}
+
+/* View link — matches iNat's .readmore */
+.inat-obs-actions {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	margin-top: 6px;
+	padding-left: 25px;
+}
+
+.inat-view-link {
+	font-size: 13px;
+	color: #337ab7;
+	text-decoration: none;
+}
+
+.inat-view-link:hover {
+	text-decoration: underline;
+}
+
+/* ── Identification column (right) ──────────────────────────────────────── */
+
+.inat-ident-col {
+	min-width: 0;
+	display: flex;
+	min-height: 100px;
+	padding: 8px;
+	gap: 8px;
+	background: #eee;
+	box-sizing: border-box;
+}
+
+/* taxon square photo — matches iNat's .identification_image */
+.inat-ident-photo {
+	display: block;
+	flex-shrink: 0;
+}
+
+.inat-ident-photo img,
+.inat-ident-photo--empty {
+	display: block;
+	width: 58px;
+	height: 58px;
+	object-fit: cover;
+	background: #e0e0e0;
+}
+
+/* body: "Your ID:" + taxon name + meta */
+.inat-ident-body {
+	flex: 1;
+	min-width: 0;
+}
+
+.inat-ident-user-taxon {
+	margin-bottom: 4px;
+	line-height: 1.4;
+}
+
+/* "Your ID:" label — matches iNat's .user span */
+.inat-ident-you {
+	display: inline;
+	font-size: 14px;
+	font-weight: 400;
+	color: #333;
+	text-transform: none;
+	letter-spacing: 0;
+}
+
+.inat-ident-taxon a {
+	text-decoration: none;
+	color: inherit;
+}
+
+.inat-ident-taxon a:hover { text-decoration: underline; }
+
+/* "display_name" common name — matches iNat's .comname.display_name */
+.inat-comname--display {
+	font-size: 14px;
+	font-weight: 400;
+	color: #5b9b00;
+}
+
+/* date added + category */
+.inat-ident-meta {
+	font-size: 12px;
+	font-style: italic;
+	color: #777;
+	line-height: 1.45;
+	margin-top: 4px;
+}
+
+/* category label — matches iNat's .ident-category */
+.inat-ident-category {
+	display: block;
+	font-size: 12px;
+	font-weight: 400;
+	padding: 0;
+	margin-top: 2px;
+	background: transparent;
+}
+
+.inat-cat--leading   { color: #4f7200; }
+.inat-cat--improving { color: #1565c0; }
+.inat-cat--supporting{ color: #6a1b9a; }
+.inat-cat--maverick  { color: #e65100; }
+.inat-cat--unknown   { color: #888; }
+
+.inat-withdrawn {
+	font-size: 10px;
+	font-weight: 700;
+	color: #b42318;
+	text-transform: uppercase;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+	.inat-id-fields {
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.inat-id-label-spacer {
+		display: none;
+	}
+
+	.inat-id-field--check,
+	.inat-id-field--btns {
+		flex-direction: row;
+		flex-wrap: wrap;
+	}
+
+	.inat-id-card {
+		grid-template-columns: minmax(0, 1fr) 120px;
+	}
+
+	.inat-obs-photo,
+	.inat-obs-photo img,
+	.inat-obs-photo--empty {
+		width: 100px;
+		height: 100px;
+	}
+
+	.inat-ident-col {
+		grid-column: 1 / -1;
+	}
+}
+
+@media (max-width: 520px) {
+	.inat-id-card {
+		grid-template-columns: 1fr;
+	}
+
+	.inat-obs-photo,
+	.inat-obs-photo img,
+	.inat-obs-photo--empty {
+		width: 100px;
+		height: 100px;
+	}
+
+	.inat-obs-photo,
+	.inat-ident-col {
+		grid-column: auto;
+	}
+}

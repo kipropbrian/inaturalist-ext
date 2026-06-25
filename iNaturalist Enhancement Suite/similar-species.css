@@ -1,0 +1,218 @@
+/* ── Similar Species Tab in Identify Modal ────────────────────────────────── */
+
+#inat-similar-tab-panel {
+	padding: 15px 20px;
+	font-family: inherit;
+	color: #333;
+}
+
+.inat-similar-header {
+	margin-bottom: 12px;
+	border-bottom: 1px solid #eee;
+	padding-bottom: 10px;
+}
+
+.inat-similar-header h3 {
+	font-size: 15px;
+	font-weight: 700;
+	color: #4f7200;
+	margin: 0 0 4px;
+}
+
+.inat-similar-header p {
+	font-size: 12px;
+	color: #666;
+	margin: 0;
+}
+
+/* ── Loading Spinner ──────────────────────────────────────────────────────── */
+
+.inat-similar-loading {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	padding: 40px 20px;
+	gap: 12px;
+	color: #666;
+	font-size: 13px;
+}
+
+.inat-similar-spinner {
+	width: 28px;
+	height: 28px;
+	border: 3px solid #e2f0d0;
+	border-top-color: #74ac00;
+	border-radius: 50%;
+	animation: inat-similar-spin 0.8s linear infinite;
+}
+
+@keyframes inat-similar-spin {
+	to { transform: rotate(360deg); }
+}
+
+/* ── Error & Empty State ─────────────────────────────────────────────────── */
+
+.inat-similar-error,
+.inat-similar-empty {
+	padding: 30px 20px;
+	text-align: center;
+	color: #777;
+	font-size: 13px;
+	border: 1px dashed #dcdfd3;
+	border-radius: 8px;
+	background: #fbfdf9;
+}
+
+.inat-similar-error {
+	color: #a82424;
+	border-color: #fbd5d5;
+	background: #fdf2f2;
+}
+
+/* ── Taxon Grid & Cards ──────────────────────────────────────────────────── */
+
+.inat-similar-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+	gap: 14px;
+	list-style: none;
+	padding: 0;
+	margin: 0;
+}
+
+.inat-similar-card {
+	display: flex;
+	flex-direction: column;
+	height: 220px;
+	background: linear-gradient(135deg, #ffffff 0%, #fcfdfa 100%);
+	border: 1px solid #dcdfd3;
+	border-radius: 10px;
+	box-shadow: 0 2px 6px rgba(116, 172, 0, 0.03), 0 1px 2px rgba(0, 0, 0, 0.01);
+	overflow: hidden;
+	transition: transform 0.22s cubic-bezier(0.25, 0.8, 0.25, 1), 
+	            box-shadow 0.22s cubic-bezier(0.25, 0.8, 0.25, 1), 
+	            border-color 0.22s ease;
+}
+
+.inat-similar-card:hover {
+	transform: translateY(-3px);
+	box-shadow: 0 8px 18px rgba(116, 172, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.02);
+	border-color: #bad687;
+}
+
+/* ── Image Section ───────────────────────────────────────────────────────── */
+
+.inat-similar-photo-wrap {
+	display: block;
+	position: relative;
+	flex-grow: 1;
+	overflow: hidden;
+	background: #eaeaea;
+}
+
+.inat-similar-photo-wrap img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	transition: transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.inat-similar-card:hover .inat-similar-photo-wrap img {
+	transform: scale(1.06);
+}
+
+.inat-similar-photo-wrap--empty {
+	width: 100%;
+	height: 100%;
+	background: #f0f0f0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.inat-similar-photo-wrap--empty::after {
+	content: '\f03e'; /* FontAwesome photo icon */
+	font-family: FontAwesome;
+	color: #ccc;
+	font-size: 20px;
+}
+
+.inat-similar-rank {
+	position: absolute;
+	top: 6px;
+	left: 6px;
+	background: rgba(0, 0, 0, 0.65);
+	color: #fff;
+	font-size: 9.5px;
+	font-weight: 700;
+	padding: 2px 6px;
+	border-radius: 4px;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+
+.inat-similar-count-badge {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	background: rgba(198, 116, 0, 0.85); /* Warm amber overlay badge */
+	color: #fff;
+	font-size: 9.5px;
+	font-weight: 700;
+	padding: 2px 6px;
+	border-radius: 4px;
+	letter-spacing: 0.03em;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+
+.inat-similar-footer {
+	display: flex;
+	align-items: center;
+	padding: 8px 10px;
+	background: #ffffff;
+	border-top: 1px solid #eef1ea;
+	height: 52px;
+	box-sizing: border-box;
+}
+
+.inat-similar-names {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	flex-grow: 1;
+	min-width: 0;
+	line-height: 1.25;
+}
+
+.inat-similar-common {
+	display: block;
+	font-size: 12px;
+	font-weight: 600;
+	color: #4f7200;
+	text-decoration: none;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.inat-similar-common:hover {
+	text-decoration: underline;
+}
+
+.inat-similar-scientific {
+	display: block;
+	font-size: 10px;
+	font-style: italic;
+	color: #666;
+	text-decoration: none;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	margin-top: 1px;
+}
+
+.inat-similar-scientific:hover {
+	text-decoration: underline;
+}

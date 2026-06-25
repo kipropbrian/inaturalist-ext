@@ -1,6 +1,6 @@
-// override FileReader.readAsDataURL to include the original filename in the data URL 
+// override FileReader.readAsDataURL to include the original filename in the data URL
 FileReader.prototype.readAsDataURLOriginal = FileReader.prototype.readAsDataURL;
-FileReader.prototype.readAsDataURL = function(file) { 
+FileReader.prototype.readAsDataURL = function(file) {
 	const originalReader = this;
 	if (!originalReader.onload) {
 		FileReader.prototype.readAsDataURLOriginal.apply(this, arguments);
@@ -11,7 +11,7 @@ FileReader.prototype.readAsDataURL = function(file) {
 	const reader = new FileReader();
 	reader.onload = function() {
 		const dataUrl = reader.result.replace(';base64,', `;name=${filename};base64,`);
-		
+
 		// TODO properly clone event
 		originalReader.onload({ target: { result: dataUrl }});
 	}
@@ -43,7 +43,7 @@ CanvasRenderingContext2D.prototype.drawImage = function() {
 		this.canvas._filename = image._filename;
 	}
 
-	CanvasRenderingContext2D.prototype.drawImageOriginal.apply(this, arguments); 
+	CanvasRenderingContext2D.prototype.drawImageOriginal.apply(this, arguments);
 };
 
 
@@ -55,8 +55,8 @@ HTMLCanvasElement.prototype.toBlob = function() {
 	arguments[0] = function(blob) {
 		originalCallback(new File([blob], filename));
 	}
-	
-	HTMLCanvasElement.prototype.toBlobOriginal.apply(this, arguments); 
+
+	HTMLCanvasElement.prototype.toBlobOriginal.apply(this, arguments);
 };
 
 // Once iNat's I18n global has loaded with the page's translations, broadcast
@@ -425,7 +425,7 @@ window.fetch = async (url, options) => {
 					}
 				}
 
-				const payload = { 
+				const payload = {
 					detail: {
 						data,
 						filename
@@ -443,9 +443,10 @@ window.fetch = async (url, options) => {
 			if (observationMatch) {
 				const data = await response.clone().json();
 				if (data && data.results && data.results.length && data.results[0]) {
-					const payload = { 
+					const payload = {
 						detail: {
-							location: data.results[0].location
+							location: data.results[0].location,
+							observation: data.results[0]
 						}
 					};
 
@@ -458,6 +459,6 @@ window.fetch = async (url, options) => {
 	} catch (err) {
 		console.error(err);
 	}
-    
+
 	return response;
 };

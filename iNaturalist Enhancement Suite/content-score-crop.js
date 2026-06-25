@@ -807,16 +807,20 @@ chrome.storage.sync.get({
 
 	// Apply selected taxon to the identification form via page context (has jQuery access)
 	function applyTaxonToForm(taxon) {
+		let input = null;
 		if (isIdentifyPage()) {
-			// On /identify page, click the "Add ID" button to open the input
-			const addIdButton = document.querySelector('button:has(i.icon-identification)');
-			if (addIdButton) {
-				log('Clicking Add ID button');
-				log('Form before click:', document.querySelector('.IdentificationForm'));
-				addIdButton.click();
-				log('Form after click:', document.querySelector('.IdentificationForm'));
-			} else {
-				log('Add ID button not found');
+			input = document.querySelector('.IdentificationForm .TaxonAutocomplete input');
+			if (!input) {
+				// On /identify page, click the "Add ID" button to open the input
+				const addIdButton = document.querySelector('button:has(i.icon-identification)');
+				if (addIdButton) {
+					log('Clicking Add ID button');
+					log('Form before click:', document.querySelector('.IdentificationForm'));
+					addIdButton.click();
+					log('Form after click:', document.querySelector('.IdentificationForm'));
+				} else {
+					log('Add ID button not found');
+				}
 			}
 		} else {
 			// On observation page, find and click the "Suggest an Identification" tab
@@ -830,7 +834,7 @@ chrome.storage.sync.get({
 		}
 
 		// Wait for UI to update (longer delay on /identify page for input to appear)
-		const delay = isIdentifyPage() ? 500 : 200;
+		const delay = isIdentifyPage() ? (input ? 50 : 500) : 200;
 		log('Waiting', delay, 'ms for UI to update...');
 		setTimeout(() => {
 			log('After delay - looking for TaxonAutocomplete');
