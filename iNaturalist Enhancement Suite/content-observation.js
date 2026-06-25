@@ -48,6 +48,202 @@ chrome.storage.sync.get({
 
 	let location;
 	let computerVisionResults = new Map();
+	const hierarchyTaxaCache = new Map();
+
+	function injectHierarchyStyles() {
+		if (document.getElementById('inat-main-cv-hierarchy-styles')) return;
+		const style = document.createElement('style');
+		style.id = 'inat-main-cv-hierarchy-styles';
+		style.textContent = `
+			.inat-main-cv-hierarchy {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 3px 5px;
+				width: 100%;
+				margin-top: 5px;
+				padding-top: 5px;
+				border-top: 1px solid rgba(0, 0, 0, 0.08);
+				font-size: 10px;
+				line-height: 1.35;
+			}
+			.inat-main-cv-hierarchy a {
+				color: #5f7044;
+				text-decoration: none;
+			}
+			.inat-main-cv-hierarchy a:hover {
+				color: #337ab7;
+				text-decoration: underline;
+			}
+			.inat-main-cv-hierarchy-separator {
+				color: #aaa;
+			}
+			.inat-main-cv-hierarchy-loading {
+				color: #999;
+				font-style: italic;
+			}
+		`;
+		document.head.appendChild(style);
+	}
+
+	injectHierarchyStyles();
+
+	if (window.location.pathname === '/observations/identify') {
+		enableIdentifyAutoPaging();
+	}
+
+	function enableIdentifyAutoPaging() {
+		let observedPagination = null;
+		let loadingPage = false;
+		let lastTriggeredPage = null;
+		let previousPage = null;
+		let cooldownUntil = 0;
+		let overlayShownAt = 0;
+		let finishTimer = null;
+
+		const maybeLoadNextPage = deltaY => {
+			if (deltaY <= 0) return;
+			if (Date.now() < cooldownUntil) return;
+			const pagination = observedPagination;
+			if (!pagination || loadingPage) return;
+			const documentHeight = document.documentElement.scrollHeight;
+			const viewportBottom = window.scrollY + window.innerHeight;
+			if (viewportBottom < documentHeight - 8) return;
+
+			const currentPage = getCurrentIdentifyPage(pagination);
+			const nextItem = pagination.querySelector('li.rc-pagination-next[aria-disabled="false"]');
+			if (!nextItem || currentPage === lastTriggeredPage) return;
+
+			loadingPage = true;
+			lastTriggeredPage = currentPage;
+			previousPage = currentPage;
+			showAutoPagingStatus(pagination, 'Loading next page...');
+			showAutoPagingOverlay('Loading next page...');
+			overlayShownAt = Date.now();
+			requestAnimationFrame(() => {
+				setTimeout(() => nextItem.click(), 100);
+			});
+			setTimeout(() => {
+				if (!loadingPage) return;
+				loadingPage = false;
+				lastTriggeredPage = null;
+				hideAutoPagingOverlay();
+				showAutoPagingStatus(pagination, 'Could not load the next page automatically');
+			}, 15000);
+		};
+
+		window.addEventListener('wheel', event => {
+			maybeLoadNextPage(event.deltaY);
+		}, { passive: true });
+
+		const watchPagination = () => {
+			const pagination = document.querySelector('.PaginationControl .rc-pagination:not(.collapse)');
+			if (pagination === observedPagination) return;
+
+			observedPagination = pagination;
+		};
+
+		const pageObserver = new MutationObserver(() => {
+			watchPagination();
+			if (!loadingPage || !observedPagination) return;
+
+			const currentPage = getCurrentIdentifyPage(observedPagination);
+			if (currentPage && currentPage !== previousPage) {
+				clearTimeout(finishTimer);
+				const minimumRemaining = Math.max(0, 1500 - (Date.now() - overlayShownAt));
+				finishTimer = setTimeout(() => {
+					loadingPage = false;
+					lastTriggeredPage = null;
+					cooldownUntil = Date.now() + 10000;
+					window.scrollTo({ top: 0, behavior: 'smooth' });
+					startAutoPagingCooldown(observedPagination);
+				}, Math.max(500, minimumRemaining));
+			}
+		});
+
+		pageObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+		watchPagination();
+	}
+
+	function showAutoPagingOverlay(message) {
+		let overlay = document.getElementById('inat-identify-auto-page-overlay');
+		if (!overlay) {
+			overlay = document.createElement('div');
+			overlay.id = 'inat-identify-auto-page-overlay';
+			overlay.style.cssText = `
+				position: fixed;
+				inset: 0;
+				z-index: 2147483646;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				background: rgba(255, 255, 255, 0.72);
+				backdrop-filter: blur(2px);
+			`;
+			overlay.innerHTML = `
+				<div style="display:flex;align-items:center;gap:10px;padding:14px 18px;background:#fff;border:1px solid #d8e4c0;border-radius:7px;box-shadow:0 8px 30px rgba(0,0,0,.16);font-size:14px;color:#4f7200;font-weight:600;">
+					<span class="inat-auto-page-spinner"></span>
+					<span class="inat-auto-page-message"></span>
+				</div>
+			`;
+			const style = document.createElement('style');
+			style.textContent = `
+				.inat-auto-page-spinner {
+					width: 18px;
+					height: 18px;
+					border: 2px solid #dce8c5;
+					border-top-color: #74ac00;
+					border-radius: 50%;
+					animation: inat-auto-page-spin .7s linear infinite;
+				}
+				@keyframes inat-auto-page-spin { to { transform: rotate(360deg); } }
+			`;
+			document.head.appendChild(style);
+			document.body.appendChild(overlay);
+		}
+		overlay.querySelector('.inat-auto-page-message').textContent = message;
+		overlay.style.display = 'flex';
+	}
+
+	function hideAutoPagingOverlay() {
+		const overlay = document.getElementById('inat-identify-auto-page-overlay');
+		if (overlay) overlay.style.display = 'none';
+	}
+
+	function startAutoPagingCooldown(pagination) {
+		let secondsRemaining = 10;
+		hideAutoPagingOverlay();
+		showAutoPagingStatus(pagination, `Next page loaded. Auto-load available in ${secondsRemaining}s`);
+
+		const timer = setInterval(() => {
+			secondsRemaining -= 1;
+			if (secondsRemaining <= 0) {
+				clearInterval(timer);
+				showAutoPagingStatus(pagination, 'Scroll beyond the bottom to load the next page');
+				return;
+			}
+			showAutoPagingStatus(pagination, `Next page loaded. Auto-load available in ${secondsRemaining}s`);
+		}, 1000);
+	}
+
+	function getCurrentIdentifyPage(pagination) {
+		const activePage = pagination.querySelector('.rc-pagination-item-active');
+		return activePage ? activePage.textContent.trim() : null;
+	}
+
+	function showAutoPagingStatus(pagination, message) {
+		const control = pagination.closest('.PaginationControl');
+		if (!control) return;
+
+		let status = control.querySelector('.inat-identify-auto-page-status');
+		if (!status) {
+			status = document.createElement('div');
+			status.className = 'inat-identify-auto-page-status';
+			status.style.cssText = 'margin: 8px 0; color: #777; font-size: 12px;';
+			status.setAttribute('aria-live', 'polite');
+			control.appendChild(status);
+		}
+		status.textContent = message;
+	}
 
 	document.addEventListener('observationFetch', event => {
 		log('observationFetch handler', event.detail);
@@ -225,6 +421,13 @@ chrome.storage.sync.get({
 									}
 								});
 							}
+
+							if (
+								computerVision.common_ancestor?.taxon
+								&& computerVision.common_ancestor.taxon.id == taxonId
+							) {
+								addMainSuggestionHierarchy(div, computerVision.common_ancestor.taxon);
+							}
 						}
 
 						break;
@@ -254,6 +457,67 @@ chrome.storage.sync.get({
 
 		observer.observe(ul, options);
 	});
+
+	async function addMainSuggestionHierarchy(row, compactTaxon) {
+		if (row.querySelector('.inat-main-cv-hierarchy')) return;
+
+		const hierarchy = document.createElement('div');
+		hierarchy.className = 'inat-main-cv-hierarchy';
+		hierarchy.innerHTML = '<span class="inat-main-cv-hierarchy-loading">Loading classification...</span>';
+		hierarchy.addEventListener('click', event => event.stopPropagation());
+		row.style.flexWrap = 'wrap';
+		row.appendChild(hierarchy);
+
+		try {
+			const fullTaxon = await fetchTaxon(compactTaxon.id);
+			const taxonIds = [...(fullTaxon.ancestor_ids || []), fullTaxon.id];
+			const missingIds = taxonIds.filter(id => !hierarchyTaxaCache.has(String(id)));
+			if (missingIds.length) await fetchTaxa(missingIds);
+			if (!hierarchy.isConnected) return;
+
+			const taxa = taxonIds
+				.map(id => hierarchyTaxaCache.get(String(id)))
+				.filter(Boolean);
+			hierarchy.innerHTML = taxa.map((taxon, index) => {
+				const label = taxon.preferred_common_name || taxon.name;
+				const separator = index
+					? '<span class="inat-main-cv-hierarchy-separator">›</span>'
+					: '';
+				return `${separator}<a href="https://www.inaturalist.org/taxa/${taxon.id}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+			}).join('');
+		} catch (error) {
+			logDebug('Could not load main CV hierarchy:', error);
+			hierarchy.innerHTML = '<span class="inat-main-cv-hierarchy-loading">Classification unavailable</span>';
+		}
+	}
+
+	async function fetchTaxon(taxonId) {
+		const cached = hierarchyTaxaCache.get(String(taxonId));
+		if (cached?.ancestor_ids) return cached;
+		const taxa = await fetchTaxa([taxonId]);
+		return taxa[0] || {};
+	}
+
+	async function fetchTaxa(ids) {
+		const results = [];
+		for (let index = 0; index < ids.length; index += 30) {
+			const batch = ids.slice(index, index + 30);
+			const response = await fetch(`https://api.inaturalist.org/v1/taxa/${batch.join(',')}`);
+			if (!response.ok) throw new Error(`Taxa API returned HTTP ${response.status}`);
+			const data = await response.json();
+			(data.results || []).forEach(taxon => {
+				hierarchyTaxaCache.set(String(taxon.id), taxon);
+				results.push(taxon);
+			});
+		}
+		return results;
+	}
+
+	function escapeHtml(value) {
+		const element = document.createElement('div');
+		element.textContent = String(value == null ? '' : value);
+		return element.innerHTML;
+	}
 
 	chrome.storage.sync.get({
 		colorDisplayMode: 'sidebar'

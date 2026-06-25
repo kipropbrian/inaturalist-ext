@@ -150,112 +150,25 @@ document.addEventListener('scoreImageRequest', async (event) => {
 });
 
 // Listen for taxon selection requests from content script
-document.addEventListener('selectTaxonRequest', (event) => {
+document.addEventListener('selectTaxonRequest', async (event) => {
 	const { taxon, requestId, isIdentifyPage } = event.detail;
 
 	try {
-		// On identify page, specifically target the IdentificationForm (not the SearchBar)
-		const containerSelectors = isIdentifyPage
-			? ['.IdentificationForm .TaxonAutocomplete']
-			: ['.TaxonAutocomplete'];
-
-		const inputSelectors = [
-			'input.ui-autocomplete-input',
-			'input[type="search"]',
-			'input'
-		];
-
-		let container = null;
-		let input = null;
-
-		// Try each container selector
-		for (const containerSel of containerSelectors) {
-			container = document.querySelector(containerSel);
-			console.log('[iNat Enhancement] Trying selector:', containerSel, 'found:', container);
-			if (container) {
-				// Try each input selector within this container
-				for (const inputSel of inputSelectors) {
-					input = container.querySelector(inputSel);
-					if (input) break;
-				}
-				if (input) break;
-			}
+		const focused = document.activeElement;
+		if (focused && focused.closest('[aria-hidden="true"]')) {
+			focused.blur();
 		}
 
-		// Fallback if not found
+		let input = findIdentificationInput(isIdentifyPage);
 		if (!input && isIdentifyPage) {
-			const identifySelectors = [
-				'.IdentificationForm input[type="search"]',
-				'.IdentificationForm input'
-			];
-
-			for (const sel of identifySelectors) {
-				input = document.querySelector(sel);
-				if (input) {
-					container = input.closest('.TaxonAutocomplete') || input.parentElement;
-					break;
-				}
-			}
+			const addIdButton = findVisibleAddIdButton() || await waitForAddIdButton(1500);
+			if (!addIdButton) throw new Error('Could not find the active Add ID button');
+			addIdButton.click();
+			input = await waitForIdentificationInput(4000);
 		}
 
-		if (!container || !input) {
-			// If not found immediately on identify page, poll for it to appear
-			if (isIdentifyPage) {
-				console.log('[iNat Enhancement] Input not found immediately, polling...');
-				let pollAttempts = 0;
-				const maxPollAttempts = 20;
-				const pollInterval = setInterval(() => {
-					pollAttempts++;
-
-					// Re-try all the selectors
-					for (const containerSel of containerSelectors) {
-						container = document.querySelector(containerSel);
-						if (container) {
-							for (const inputSel of inputSelectors) {
-								input = container.querySelector(inputSel);
-								if (input) break;
-							}
-							if (input) break;
-						}
-					}
-
-					if (!input) {
-						const identifySelectors = [
-							'.ObservationModal .TaxonAutocomplete input',
-							'.SplitTaxonSelector input',
-							'.identification input[type="text"]',
-							'[class*="identification"] input[type="text"]'
-						];
-						for (const sel of identifySelectors) {
-							input = document.querySelector(sel);
-							if (input) {
-								container = input.closest('.TaxonAutocomplete') || input.parentElement;
-								break;
-							}
-						}
-					}
-
-					if (input) {
-						clearInterval(pollInterval);
-						console.log('[iNat Enhancement] Found input after polling:', input);
-						performAutocomplete(input, container, taxon, requestId);
-					} else if (pollAttempts >= maxPollAttempts) {
-						clearInterval(pollInterval);
-						console.error('[iNat Enhancement] Input not found after polling');
-						console.error('[iNat Enhancement] Available elements:', document.querySelectorAll('[class*="TaxonAutocomplete"], [class*="identification"]'));
-						document.dispatchEvent(new CustomEvent('selectTaxonResponse', {
-							detail: { requestId, success: false, error: 'Could not find autocomplete input after waiting' }
-						}));
-					}
-				}, 100);
-				return;
-			}
-
-			console.error('[iNat Enhancement] Container:', container, 'Input:', input);
-			console.error('[iNat Enhancement] Available TaxonAutocomplete elements:', document.querySelectorAll('[class*="TaxonAutocomplete"]'));
-			throw new Error('Could not find autocomplete input');
-		}
-
+		if (!input) throw new Error('Could not find the active identification input');
+		const container = input.closest('.TaxonAutocomplete') || input.parentElement;
 		performAutocomplete(input, container, taxon, requestId);
 
 	} catch (error) {
@@ -266,138 +179,98 @@ document.addEventListener('selectTaxonRequest', (event) => {
 	}
 });
 
+function findIdentificationInput(isIdentifyPage) {
+	const selector = isIdentifyPage
+		? '.ObservationModal .IdentificationForm:not(.collapse) input[name="taxon_name"]'
+		: '.TaxonAutocomplete input[name="taxon_name"], .TaxonAutocomplete input[type="search"]';
+	return findVisibleElement(selector);
+}
+
+function findVisibleAddIdButton() {
+	return Array.from(document.querySelectorAll('.ObservationModal .info-tab.active .tools button'))
+		.find(button => (
+			button.querySelector('i.icon-identification')
+			&& isVisibleElement(button)
+		)) || null;
+}
+
+function waitForIdentificationInput(timeoutMs) {
+	return new Promise((resolve, reject) => {
+		const existing = findIdentificationInput(true);
+		if (existing) return resolve(existing);
+
+		const observer = new MutationObserver(() => {
+			const input = findIdentificationInput(true);
+			if (!input) return;
+			observer.disconnect();
+			clearTimeout(timeout);
+			resolve(input);
+		});
+		const timeout = setTimeout(() => {
+			observer.disconnect();
+			reject(new Error('Could not find autocomplete input after opening Add ID'));
+		}, timeoutMs);
+		observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+	});
+}
+
+function waitForAddIdButton(timeoutMs) {
+	return new Promise(resolve => {
+		const existing = findVisibleAddIdButton();
+		if (existing) return resolve(existing);
+
+		const observer = new MutationObserver(() => {
+			const button = findVisibleAddIdButton();
+			if (!button) return;
+			observer.disconnect();
+			clearTimeout(timeout);
+			resolve(button);
+		});
+		const timeout = setTimeout(() => {
+			observer.disconnect();
+			resolve(null);
+		}, timeoutMs);
+		observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+	});
+}
+
+function findVisibleElement(selector) {
+	return Array.from(document.querySelectorAll(selector)).find(isVisibleElement) || null;
+}
+
+function isVisibleElement(element) {
+	if (element.closest('[aria-hidden="true"]') && !element.closest('.ObservationModal.in')) return false;
+	const style = window.getComputedStyle(element);
+	if (style.display === 'none' || style.visibility === 'hidden') return false;
+	return element.getClientRects().length > 0;
+}
+
 // Extracted autocomplete logic for reuse
 function performAutocomplete(input, container, taxon, requestId) {
 	try {
 		const $input = $(input);
 
-		console.log('[iNat Enhancement] performAutocomplete called');
-		console.log('[iNat Enhancement] Input loading class:', input.classList.contains('ui-autocomplete-loading'));
-
-		// Ensure taxon has title property
+		// iNaturalist's TaxonAutocomplete listens for this event and stores the
+		// complete object in input.data("autocomplete-item"), which is what the
+		// IdentificationForm reads on submit.
 		if (!taxon.title) {
 			taxon.title = taxon.preferred_common_name
 				? `${taxon.preferred_common_name} · ${taxon.name}`
 				: taxon.name;
 		}
 
-		// Wait for any existing autocomplete loading to finish
-		function waitForReady() {
-			return new Promise(resolve => {
-				let checks = 0;
-				const checkReady = setInterval(() => {
-					checks++;
-					const isLoading = input.classList.contains('ui-autocomplete-loading');
-					if (!isLoading || checks > 20) {
-						clearInterval(checkReady);
-						console.log('[iNat Enhancement] Input ready after', checks, 'checks, loading:', isLoading);
-						resolve();
-					}
-				}, 50);
-			});
+		$input.trigger('assignSelection', [taxon]);
+
+		const selected = $input.data('autocomplete-item');
+		if (!selected || Number(selected.id) !== Number(taxon.id)) {
+			throw new Error(`Taxon selection could not be verified for ID ${taxon.id}`);
 		}
 
-		waitForReady().then(() => {
-			// Focus input
-			input.focus();
-			input.click();
-			console.log('[iNat Enhancement] After focus, activeElement:', document.activeElement === input);
-
-			// Use native setter to bypass React
-			const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-			nativeSetter.call(input, taxon.name);
-			input.dispatchEvent(new Event('input', { bubbles: true }));
-			console.log('[iNat Enhancement] Set value via native setter:', input.value);
-
-			// Small delay then trigger search
-			setTimeout(() => {
-				console.log('[iNat Enhancement] Value before search:', input.value);
-				$input.autocomplete('search', taxon.name);
-				console.log('[iNat Enhancement] Triggered search for:', taxon.name);
-				startMenuPolling();
-			}, 100);
-		});
-
-		function startMenuPolling() {
-
-		// Wait for dropdown to appear, then click the matching result
-		let attempts = 0;
-		const maxAttempts = 30;
-		const checkInterval = setInterval(() => {
-			attempts++;
-			// Get the menu widget associated with this input (jQuery UI appends it to body)
-			let menu;
-			try {
-				menu = $input.autocomplete('widget')[0];
-			} catch (e) {
-				console.log('[iNat Enhancement] Error getting widget:', e.message);
-			}
-
-			if (attempts === 1 || attempts === 10 || attempts === 20) {
-				console.log('[iNat Enhancement] Attempt', attempts,
-					'- menu:', menu?.id,
-					'- children:', menu?.children.length,
-					'- display:', menu?.style.display,
-					'- input.value:', input.value);
-			}
-
-			if (menu && menu.children.length > 0 && menu.style.display !== 'none') {
-				clearInterval(checkInterval);
-
-				// Small delay to let the menu fully render
-				setTimeout(() => {
-					const results = menu.querySelectorAll('.ac-result');
-
-					let targetResult = results[0]; // Default to first
-					for (const result of results) {
-						if (result.dataset.taxonId == taxon.id) {
-							targetResult = result;
-							break;
-						}
-					}
-
-					if (!targetResult) {
-						targetResult = menu.querySelector('li');
-					}
-
-					if (targetResult) {
-						// Simulate proper mouse events
-						targetResult.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-						targetResult.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-						targetResult.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-					}
-
-					// Force close the dropdown and update thumbnail
-					setTimeout(() => {
-						$input.autocomplete('close');
-						$(menu).hide();
-						input.blur();
-
-						// Update the thumbnail - it's a div with background-image, not an img tag
-						const thumbDiv = container.querySelector('.ac-select-thumb');
-						if (thumbDiv && taxon.default_photo?.square_url) {
-							thumbDiv.style.backgroundImage = `url("${taxon.default_photo.square_url}")`;
-						}
-
-						// Scroll the container into view
-						container.scrollIntoView({ behavior: 'smooth', block: 'center' });
-					}, 100);
-
-					document.dispatchEvent(new CustomEvent('selectTaxonResponse', {
-						detail: { requestId, success: true }
-					}));
-				}, 100);
-			}
-
-			if (attempts >= maxAttempts) {
-				clearInterval(checkInterval);
-				console.warn('[iNat Enhancement] Autocomplete dropdown did not appear');
-				document.dispatchEvent(new CustomEvent('selectTaxonResponse', {
-					detail: { requestId, success: false, error: 'Autocomplete dropdown did not appear' }
-				}));
-			}
-		}, 100);
-		} // end startMenuPolling
+		input.blur();
+		container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		document.dispatchEvent(new CustomEvent('selectTaxonResponse', {
+			detail: { requestId, success: true, taxonId: selected.id }
+		}));
 
 	} catch (error) {
 		console.error('[iNat Enhancement] selectTaxon error:', error);
@@ -409,10 +282,13 @@ function performAutocomplete(input, container, taxon, requestId) {
 
 const oldFetch = window.fetch;
 window.fetch = async (url, options) => {
-    const response = await oldFetch(url, options);
+	const response = await oldFetch(url, options);
+	const requestUrl = typeof url === 'string' ? url : url && url.url;
 	try {
-		if (url.match(/^https:\/\/api\.inaturalist\.org\/v\d+\/computervision/i)) {
-			const data = await response.clone().json();
+		if (!requestUrl || !response.ok) return response;
+
+		if (requestUrl.match(/^https:\/\/api\.inaturalist\.org\/v\d+\/computervision/i)) {
+			const data = await readJsonResponse(response);
 			if (data) {
 				let filename = null;
 				if (options) {
@@ -439,9 +315,9 @@ window.fetch = async (url, options) => {
 		} else {
 			// Match both v1 numeric ids (e.g. /v1/observations/12345) and v2
 			// UUIDs (e.g. /v2/observations/de2a3f5c-2f45-46a5-925f-241ed6b945d3).
-			const observationMatch = url.match(/^https:\/\/api\.inaturalist\.org\/v\d+\/observations\/[\w-]+/i);
+			const observationMatch = requestUrl.match(/^https:\/\/api\.inaturalist\.org\/v\d+\/observations\/[\w-]+/i);
 			if (observationMatch) {
-				const data = await response.clone().json();
+				const data = await readJsonResponse(response);
 				if (data && data.results && data.results.length && data.results[0]) {
 					const payload = {
 						detail: {
@@ -457,8 +333,18 @@ window.fetch = async (url, options) => {
 			}
 		}
 	} catch (err) {
-		console.error(err);
+		console.debug('[iNat Enhancement] Skipped fetch response interception:', err);
 	}
 
 	return response;
 };
+
+async function readJsonResponse(response) {
+	const contentType = response.headers.get('content-type') || '';
+	if (!contentType.includes('application/json')) return null;
+
+	const text = await response.clone().text();
+	if (!text.trim()) return null;
+
+	return JSON.parse(text);
+}

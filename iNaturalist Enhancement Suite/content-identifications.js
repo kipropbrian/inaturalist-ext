@@ -14,6 +14,8 @@
 		let acCtrl        = null;
 		let selectedTaxon = null; // { id, name, commonName } — set by autocomplete selection
 		let debounce      = null;
+		let currentPage   = 1;
+		const pageSize    = 10;
 
 		waitForMount()
 			.then(inject)
@@ -70,6 +72,22 @@
 									<option value="maverick">Maverick</option>
 								</select>
 							</div>
+							<div class="inat-id-field inat-id-field--quality">
+								<label for="inat-id-quality">Quality grade</label>
+								<select id="inat-id-quality">
+									<option value="">Any</option>
+									<option value="research">Research Grade</option>
+									<option value="needs_id">Needs ID</option>
+									<option value="casual">Casual</option>
+								</select>
+							</div>
+							<div class="inat-id-field inat-id-field--sort">
+								<label for="inat-id-sort">Sort by date</label>
+								<select id="inat-id-sort">
+									<option value="desc">Newest first</option>
+									<option value="asc">Oldest first</option>
+								</select>
+							</div>
 							<div class="inat-id-field inat-id-field--check">
 								<span class="inat-id-label-spacer"></span>
 								<label class="inat-id-check-label" for="inat-id-current">
@@ -88,6 +106,7 @@
 					</form>
 					<div id="inat-id-status" hidden></div>
 					<div id="inat-id-results"></div>
+					<nav id="inat-id-pagination" aria-label="Identification results pages" hidden></nav>
 				</div>
 			`;
 
@@ -150,11 +169,18 @@
 			bar.querySelector('#inat-id-form').addEventListener('submit', e => {
 				e.preventDefault();
 				acList.hidden = true;
-				runSearch();
+				currentPage = 1;
+				runSearch(currentPage);
 			});
 
 			// Clear
 			bar.querySelector('#inat-id-btn-clear').addEventListener('click', clearAll);
+			bar.querySelector('#inat-id-pagination').addEventListener('click', e => {
+				const button = e.target.closest('button[data-page]');
+				if (!button || button.disabled) return;
+				currentPage = Number(button.dataset.page);
+				runSearch(currentPage, true);
+			});
 		}
 
 		// ── Autocomplete ─────────────────────────────────────────────────────
@@ -209,13 +235,15 @@
 
 		// ── Search ───────────────────────────────────────────────────────────
 
-		async function runSearch() {
+		async function runSearch(page = 1, preserveResults = false) {
 			const query       = document.getElementById('inat-id-query').value.trim();
 			const category    = document.getElementById('inat-id-category').value;
+			const quality     = document.getElementById('inat-id-quality').value;
+			const order       = document.getElementById('inat-id-sort').value;
 			const currentOnly = document.getElementById('inat-id-current').checked;
 
-			if (!query && !category) {
-				setStatus('Enter a taxon or choose a category, then search.', 'info');
+			if (!query && !category && !quality && order === 'desc') {
+				setStatus('Enter a taxon or choose a filter, then search.', 'info');
 				return;
 			}
 
@@ -229,19 +257,22 @@
 			searchCtrl = new AbortController();
 
 			setStatus('Searching…', 'loading');
-			document.getElementById('inat-id-results').innerHTML = '';
+			if (!preserveResults) document.getElementById('inat-id-results').innerHTML = '';
+			setPaginationDisabled(true);
 			document.getElementById('inat-id-btn-clear').hidden = false;
 
 			try {
 				const params = new URLSearchParams({
 					user_id: username,
-					per_page: '10',
-					order: 'desc',
+					per_page: String(pageSize),
+					page: String(page),
+					order,
 					order_by: 'created_at'
 				});
 
 				if (selectedTaxon) params.set('taxon_id', selectedTaxon.id);
 				if (category) params.set('category', category);
+				if (quality) params.set('quality_grade', quality);
 				if (currentOnly) params.set('current', 'true');
 
 				const res = await fetch(`${API_BASE}/identifications?${params}`, { signal: searchCtrl.signal });
@@ -253,10 +284,15 @@
 				const taxa     = await fetchMissingTaxa(rawItems, searchCtrl.signal);
 				const items    = rawItems.map(id => normalizeId(id, taxa)).filter(i => i.observationId);
 
-				renderResults(items, total);
+				currentPage = page;
+				renderResults(items, total, page);
+				if (preserveResults) {
+					document.getElementById('inat-id-status').scrollIntoView({ behavior: 'smooth', block: 'start' });
+				}
 			} catch (err) {
 				if (err.name === 'AbortError') return;
 				setStatus(`Search failed: ${err.message}`, 'error');
+				setPaginationDisabled(false);
 			}
 		}
 
@@ -314,18 +350,57 @@
 
 		// ── Render results ───────────────────────────────────────────────────
 
-		function renderResults(items, total) {
+		function renderResults(items, total, page) {
+			const firstResult = total ? ((page - 1) * pageSize) + 1 : 0;
+			const lastResult = Math.min(page * pageSize, total);
 			const label = total > items.length
-				? `Showing ${items.length} of ${total.toLocaleString()} results`
+				? `Showing ${firstResult.toLocaleString()}–${lastResult.toLocaleString()} of ${total.toLocaleString()} results`
 				: `${items.length.toLocaleString()} result${items.length !== 1 ? 's' : ''}`;
 			setStatus(label, '');
 
 			const container = document.getElementById('inat-id-results');
 			if (!items.length) {
 				container.innerHTML = '<p class="inat-id-empty">No matching identifications found.</p>';
+				renderPagination(total, page);
 				return;
 			}
 			container.innerHTML = `<ul class="inat-id-list">${items.map(renderRow).join('')}</ul>`;
+			renderPagination(total, page);
+		}
+
+		function renderPagination(total, page) {
+			const pagination = document.getElementById('inat-id-pagination');
+			const totalPages = Math.ceil(total / pageSize);
+			if (totalPages <= 1) {
+				pagination.hidden = true;
+				pagination.innerHTML = '';
+				return;
+			}
+
+			const firstPage = Math.max(1, Math.min(page - 2, totalPages - 4));
+			const lastPage = Math.min(totalPages, firstPage + 4);
+			const pageButtons = [];
+			for (let pageNumber = firstPage; pageNumber <= lastPage; pageNumber += 1) {
+				pageButtons.push(`
+					<button type="button" data-page="${pageNumber}" class="${pageNumber === page ? 'active' : ''}" ${pageNumber === page ? 'aria-current="page"' : ''}>
+						${pageNumber.toLocaleString()}
+					</button>
+				`);
+			}
+
+			pagination.innerHTML = `
+				<button type="button" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>&lsaquo; Previous</button>
+				<div class="inat-id-page-numbers">${pageButtons.join('')}</div>
+				<span>Page ${page.toLocaleString()} of ${totalPages.toLocaleString()}</span>
+				<button type="button" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Next &rsaquo;</button>
+			`;
+			pagination.hidden = false;
+		}
+
+		function setPaginationDisabled(disabled) {
+			document.querySelectorAll('#inat-id-pagination button').forEach(button => {
+				button.disabled = disabled || button.hasAttribute('aria-current');
+			});
 		}
 
 		function renderRow(item) {
@@ -426,7 +501,14 @@
 			document.getElementById('inat-id-status').hidden = true;
 			document.getElementById('inat-id-btn-clear').hidden = true;
 			document.getElementById('inat-id-ac').hidden = true;
+			document.getElementById('inat-id-category').value = '';
+			document.getElementById('inat-id-quality').value = '';
+			document.getElementById('inat-id-sort').value = 'desc';
+			document.getElementById('inat-id-current').checked = true;
+			document.getElementById('inat-id-pagination').hidden = true;
+			document.getElementById('inat-id-pagination').innerHTML = '';
 			selectedTaxon = null;
+			currentPage = 1;
 		}
 
 		function setStatus(msg, type) {

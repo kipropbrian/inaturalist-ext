@@ -1,7 +1,9 @@
-/* ── Similar Species Tab in Identify Modal ────────────────────────────────── */
+/* ── Similar Species section in the Identify modal Info panel ────────────── */
 
-#inat-similar-tab-panel {
-	padding: 15px 20px;
+.inat-similar-section {
+	margin: 18px 20px 24px;
+	padding-top: 16px;
+	border-top: 1px solid #ddd;
 	font-family: inherit;
 	color: #333;
 }
@@ -10,6 +12,43 @@
 	margin-bottom: 12px;
 	border-bottom: 1px solid #eee;
 	padding-bottom: 10px;
+}
+
+.inat-similar-classification {
+	margin-bottom: 16px;
+	padding: 12px 14px;
+	border: 1px solid #dce5cf;
+	border-radius: 6px;
+	background: #f8faf4;
+}
+
+.inat-similar-classification h3 {
+	margin: 0 0 7px;
+	font-size: 13px;
+	font-weight: 700;
+	color: #4f7200;
+}
+
+.inat-classification-path {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 6px;
+	font-size: 11px;
+	line-height: 1.45;
+}
+
+.inat-classification-path a {
+	color: #58703a;
+	text-decoration: none;
+}
+
+.inat-classification-path a:hover {
+	color: #337ab7;
+	text-decoration: underline;
+}
+
+.inat-classification-separator {
+	color: #aaa;
 }
 
 .inat-similar-header h3 {
@@ -74,8 +113,8 @@
 
 .inat-similar-grid {
 	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-	gap: 14px;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
 	list-style: none;
 	padding: 0;
 	margin: 0;
@@ -84,7 +123,7 @@
 .inat-similar-card {
 	display: flex;
 	flex-direction: column;
-	height: 220px;
+	height: 190px;
 	background: linear-gradient(135deg, #ffffff 0%, #fcfdfa 100%);
 	border: 1px solid #dcdfd3;
 	border-radius: 10px;
@@ -215,4 +254,10 @@
 
 .inat-similar-scientific:hover {
 	text-decoration: underline;
+}
+
+@media (max-width: 520px) {
+	.inat-similar-grid {
+		grid-template-columns: 1fr;
+	}
 }

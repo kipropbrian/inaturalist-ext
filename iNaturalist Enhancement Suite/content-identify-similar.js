@@ -5,128 +5,45 @@
 	chrome.storage.sync.get({ enableSimilarSpeciesTab: true }, function (settings) {
 		if (!settings.enableSimilarSpeciesTab) return;
 
-		let currentTaxonId = null;
+		let currentTaxon = null;
 		let currentPlaceId = null;
+		let loadSequence = 0;
+		const taxonCache = new Map();
 
 		// Listen for observationFetch events to track the current observation's taxon ID
 		document.addEventListener('observationFetch', event => {
 			const obs = event.detail.observation;
 			if (obs) {
-				currentTaxonId = obs.taxon ? obs.taxon.id : null;
+				currentTaxon = obs.taxon || null;
 				currentPlaceId = (obs.place_ids && obs.place_ids.length) ? obs.place_ids[0] : null;
 
-				// If our similar species tab is active, reload suggestions automatically
-				const tabBtn = document.getElementById('inat-similar-tab-btn');
-				if (tabBtn && tabBtn.classList.contains('active')) {
+				if (document.getElementById('inat-similar-section')) {
 					loadSimilarSpecies();
 				}
 			}
 		});
 
-		// Listen for the tabs to load in the observation modal
-		document.arrive('ul.inat-tabs', { existing: true }, function () {
-			const tabList = this;
-			if (tabList.querySelector('#inat-similar-tab-btn')) return; // Already injected
-
-			const sidebar = tabList.parentNode.querySelector('.sidebar');
-			if (!sidebar) return; // Should have a sidebar sibling
-
-			// Create tab button element
-			const li = document.createElement('li');
-			li.id = 'inat-similar-tab-btn';
-			li.innerHTML = '<button type="button" class="btn btn-nostyle">Similar Species</button>';
-
-			// Append tab button
-			tabList.appendChild(li);
-
-			// Create tab panel container
+		// The native Info panel puts map/details first and identification activity after it.
+		// Appending here gives the section the full sidebar width below the suggested IDs.
+		document.arrive('.ObservationModal .info-tab-inner', { existing: true }, function () {
+			if (this.querySelector('#inat-similar-section')) return;
 			const panel = document.createElement('div');
-			panel.id = 'inat-similar-tab-panel';
-			panel.className = 'inat-tab similar-tab';
-			panel.style.display = 'none';
-
-			// Append tab panel to sidebar
-			sidebar.appendChild(panel);
-
-			// Bind click event
-			const btn = li.querySelector('button');
-			btn.addEventListener('click', e => {
-				e.preventDefault();
-				activateSimilarTab();
-			});
-
-			// Watch for clicks on any native tab buttons to deactivate our tab and restore states
-			tabList.addEventListener('click', e => {
-				const button = e.target.closest('button');
-				if (!button) return;
-				const tabItem = button.closest('li');
-				if (tabItem && tabItem !== li) {
-					deactivateSimilarTab();
-					tabItem.classList.add('active');
-				}
-			});
-
-			function activateSimilarTab() {
-				li.classList.add('active');
-
-				// Remove active class from native tab buttons
-				Array.from(tabList.children).forEach(sibling => {
-					if (sibling !== li) {
-						sibling.classList.remove('active');
-					}
-				});
-
-				// Hide React tab content panels inside sidebar
-				Array.from(sidebar.children).forEach(child => {
-					if (child !== panel) {
-						child.style.display = 'none';
-					}
-				});
-
-				panel.style.display = 'block';
-				loadSimilarSpecies();
-			}
-
-			function deactivateSimilarTab() {
-				if (!li.classList.contains('active')) return;
-
-				li.classList.remove('active');
-				panel.style.display = 'none';
-
-				// Restore React tab content panels inside sidebar
-				Array.from(sidebar.children).forEach(child => {
-					if (child !== panel) {
-						child.style.display = '';
-					}
-				});
-			}
-
-			// Watch for native tab activations (handles click & keyboard navigation e.g. SHIFT + arrow keys)
-			const observer = new MutationObserver(mutations => {
-				mutations.forEach(mutation => {
-					if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-						const target = mutation.target;
-						if (target !== li && target.classList.contains('active')) {
-							deactivateSimilarTab();
-						}
-					}
-				});
-			});
-			observer.observe(tabList, { attributes: true, subtree: true, attributeFilter: ['class'] });
+			panel.id = 'inat-similar-section';
+			panel.className = 'inat-similar-section';
+			this.appendChild(panel);
+			loadSimilarSpecies();
 		});
 
 		// ── Core Functionality ───────────────────────────────────────────────
 
 		async function loadSimilarSpecies() {
-			const panel = document.getElementById('inat-similar-tab-panel');
+			const panel = document.getElementById('inat-similar-section');
 			if (!panel) return;
-
-			// Fallback to DOM parsing if currentTaxonId is not loaded yet
-			if (!currentTaxonId) {
-				currentTaxonId = getTaxonIdFromDOM();
-			}
+			const sequence = ++loadSequence;
+			const taxon = currentTaxon;
 
 			panel.innerHTML = `
+				<div id="inat-similar-classification"></div>
 				<div class="inat-similar-header">
 					<h3>Commonly Confused Species</h3>
 					<p>These species are most frequently misidentified as the observed taxon on iNaturalist.</p>
@@ -137,25 +54,40 @@
 				</div>
 			`;
 
-			if (!currentTaxonId) {
+			if (!taxon) {
 				panel.innerHTML = `
-					<div class="inat-similar-header">
-						<h3>Commonly Confused Species</h3>
-						<p>These species are most frequently misidentified as the observed taxon on iNaturalist.</p>
-					</div>
 					<div class="inat-similar-empty">
-						No similar species data available (observation is unidentified).
+						No classification is available because this observation is unidentified.
 					</div>
 				`;
 				return;
 			}
 
 			try {
-				const data = await fetchSimilarSpecies(currentTaxonId);
+				const classificationHtml = await buildClassification(taxon);
+				if (!isCurrentPanel(panel, sequence)) return;
+				const classification = panel.querySelector('#inat-similar-classification');
+				if (!classification) return;
+				classification.innerHTML = classificationHtml;
+
+				if (!isSpeciesLevelTaxon(taxon)) {
+					const loading = panel.querySelector('.inat-similar-loading');
+					if (!loading) return;
+					loading.outerHTML = `
+						<div class="inat-similar-empty">
+							Similar-species comparisons are available when an observation is identified to species or below.
+						</div>
+					`;
+					return;
+				}
+
+				const data = await fetchSimilarSpecies(taxon.id);
+				if (!isCurrentPanel(panel, sequence)) return;
 				const results = data.results || [];
 
 				if (!results.length) {
 					panel.innerHTML = `
+						${classificationHtml}
 						<div class="inat-similar-header">
 							<h3>Commonly Confused Species</h3>
 							<p>These species are most frequently misidentified as the observed taxon on iNaturalist.</p>
@@ -198,6 +130,7 @@
 				gridHTML += '</ul>';
 
 				panel.innerHTML = `
+					${classificationHtml}
 					<div class="inat-similar-header">
 						<h3>Commonly Confused Species</h3>
 						<p>These species are most frequently misidentified as the observed taxon on iNaturalist.</p>
@@ -206,6 +139,7 @@
 				`;
 
 			} catch (error) {
+				if (!isCurrentPanel(panel, sequence)) return;
 				console.error('[iNat Enhancement] Error loading similar species:', error);
 				panel.innerHTML = `
 					<div class="inat-similar-header">
@@ -219,6 +153,12 @@
 			}
 		}
 
+		function isCurrentPanel(panel, sequence) {
+			return sequence === loadSequence
+				&& panel.isConnected
+				&& document.getElementById('inat-similar-section') === panel;
+		}
+
 		// ── Helpers ──────────────────────────────────────────────────────────
 
 		async function fetchSimilarSpecies(taxonId) {
@@ -230,28 +170,46 @@
 			return await response.json();
 		}
 
-		function getTaxonIdFromDOM() {
-			const selectors = [
-				'.ObservationModal a[href*="/taxa/"]',
-				'.ObservationDetail a[href*="/taxa/"]',
-				'.obs-media a[href*="/taxa/"]',
-				'.right-col a[href*="/taxa/"]',
-				'a[href*="/taxa/"]'
-			];
+		function isSpeciesLevelTaxon(taxon) {
+			if (!taxon || !Number.isInteger(Number(taxon.id)) || Number(taxon.id) <= 0) return false;
+			return ['species', 'subspecies', 'variety', 'form', 'hybrid'].includes(taxon.rank);
+		}
 
-			for (const selector of selectors) {
-				const links = document.querySelectorAll(selector);
-				for (const link of links) {
-					const href = link.getAttribute('href');
-					if (href) {
-						const match = href.match(/\/taxa\/(\d+)/);
-						if (match) {
-							return match[1];
-						}
-					}
-				}
+		async function buildClassification(compactTaxon) {
+			const fullTaxon = await fetchTaxa([compactTaxon.id]).then(taxa => taxa[0] || compactTaxon);
+			const ids = [...new Set([...(fullTaxon.ancestor_ids || []), fullTaxon.id])];
+			const missingIds = ids.filter(id => !taxonCache.has(String(id)));
+			if (missingIds.length) await fetchTaxa(missingIds);
+
+			const links = ids.map(id => taxonCache.get(String(id)))
+				.filter(Boolean)
+				.map((taxon, index) => {
+					const label = taxon.preferred_common_name || taxon.name;
+					const separator = index ? '<span class="inat-classification-separator">›</span>' : '';
+					return `${separator}<a href="https://www.inaturalist.org/taxa/${taxon.id}" target="_blank" rel="noopener" title="${escapeHtml(taxon.name || label)}">${escapeHtml(label)}</a>`;
+				}).join('');
+
+			return `
+				<div class="inat-similar-classification">
+					<h3>Classification</h3>
+					<div class="inat-classification-path">${links}</div>
+				</div>
+			`;
+		}
+
+		async function fetchTaxa(ids) {
+			const results = [];
+			for (let index = 0; index < ids.length; index += 30) {
+				const batch = ids.slice(index, index + 30);
+				const response = await fetch(`https://api.inaturalist.org/v1/taxa/${batch.join(',')}`);
+				if (!response.ok) throw new Error(`Taxa API returned HTTP ${response.status}`);
+				const data = await response.json();
+				(data.results || []).forEach(taxon => {
+					taxonCache.set(String(taxon.id), taxon);
+					results.push(taxon);
+				});
 			}
-			return null;
+			return results;
 		}
 
 		function getMediumPhotoUrl(url) {

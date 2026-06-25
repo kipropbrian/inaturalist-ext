@@ -17,6 +17,37 @@ chrome.storage.sync.get({
 	const log = window.iNatLog || console.log;
 	const logError = window.iNatLogError || console.error;
 	const logWarn = window.iNatLogWarn || console.warn;
+	const taxonHierarchyCache = new Map();
+	const CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
+
+	async function cacheKey(namespace, value) {
+		const bytes = new TextEncoder().encode(value);
+		const digest = await crypto.subtle.digest('SHA-256', bytes);
+		const hash = Array.from(new Uint8Array(digest))
+			.map(byte => byte.toString(16).padStart(2, '0'))
+			.join('');
+		return `inat-${namespace}-${hash}`;
+	}
+
+	function readPersistentCache(key) {
+		return new Promise(resolve => {
+			chrome.storage.local.get(key, result => {
+				const entry = result[key];
+				if (!entry || Date.now() - entry.savedAt > CACHE_TTL) {
+					if (entry) chrome.storage.local.remove(key);
+					resolve(null);
+					return;
+				}
+				resolve(entry.value);
+			});
+		});
+	}
+
+	function writePersistentCache(key, value) {
+		return new Promise(resolve => {
+			chrome.storage.local.set({ [key]: { savedAt: Date.now(), value } }, resolve);
+		});
+	}
 
 	// Load Cropper.js CSS from extension bundle
 	let cropperCssLoaded = false;
@@ -160,29 +191,100 @@ chrome.storage.sync.get({
 			.inat-crop-results-list .result-info {
 				flex: 1;
 				min-width: 0;
-				overflow: hidden;
+				overflow: visible;
 			}
 			.inat-crop-results-list .result-name {
+				display: inline;
 				font-weight: 600;
 				font-size: 14px;
-				white-space: nowrap;
-				overflow: hidden;
-				text-overflow: ellipsis;
 			}
 			.inat-crop-results-list .result-rank {
+				display: inline;
 				font-size: 12px;
 				color: #666;
-				white-space: nowrap;
-				overflow: hidden;
-				text-overflow: ellipsis;
+				margin-left: 5px;
 			}
 			.inat-crop-results-list .result-rank em {
 				font-style: italic;
 			}
 			.inat-crop-results-list .result-tags {
+				display: inline;
 				font-size: 11px;
 				color: #74ac00;
-				margin-top: 2px;
+				margin-left: 6px;
+			}
+			.inat-crop-results-list .result-tags::before {
+				content: '·';
+				color: #aaa;
+				margin-right: 6px;
+			}
+			.inat-crop-results-list .result-hierarchy {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 4px;
+				margin-top: 4px;
+				padding-bottom: 2px;
+				font-size: 10px;
+				line-height: 1.35;
+				overflow: visible;
+				white-space: normal;
+			}
+			.inat-crop-results-list .result-hierarchy a {
+				color: #5f6f47;
+				text-decoration: none;
+			}
+			.inat-crop-results-list .result-hierarchy a:hover {
+				color: #337ab7;
+				text-decoration: underline;
+			}
+			.inat-crop-results-list .result-hierarchy-select,
+			.inat-crop-results-list .result-shared-path .result-hierarchy-select {
+				height: auto;
+				padding: 0;
+				border: 0;
+				background: transparent;
+				color: #5f6f47;
+				font: inherit;
+				cursor: pointer;
+			}
+			.inat-crop-results-list .result-hierarchy-select:hover {
+				color: #337ab7;
+				text-decoration: underline;
+			}
+			.inat-crop-results-list .result-hierarchy-separator {
+				color: #aaa;
+			}
+			.inat-crop-results-list .result-hierarchy-loading {
+				color: #999;
+				font-style: italic;
+			}
+			.inat-crop-results-list .result-shared-hierarchy {
+				padding: 8px 16px;
+				background: #f7f9f3;
+				border-bottom: 1px solid #dfe7d3;
+			}
+			.inat-crop-results-list .result-shared-label {
+				display: block;
+				margin-bottom: 3px;
+				font-size: 10px;
+				font-weight: 700;
+				color: #788268;
+				text-transform: uppercase;
+				letter-spacing: 0.04em;
+			}
+			.inat-crop-results-list .result-shared-path {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 4px;
+				font-size: 11px;
+				line-height: 1.4;
+			}
+			.inat-crop-results-list .result-taxon-link {
+				color: inherit;
+				text-decoration: none;
+			}
+			.inat-crop-results-list .result-taxon-link:hover {
+				text-decoration: underline;
 			}
 			/* Gradient mode: black text for readability */
 			.inat-crop-results-list.gradient-mode .result-name,
@@ -758,11 +860,22 @@ chrome.storage.sync.get({
 		scoreResultsPanel.classList.add('visible');
 		scoreResultsVisible = true;
 
-		// Check cache for this image URL
+		const metadata = getObservationMetadata();
+
+		// Check memory and persistent caches before downloading or scoring.
 		if (scoreResultsCache.has(imageUrl)) {
 			log('Using cached score results for', imageUrl);
 			loadingEl.style.display = 'none';
 			displayCVResults(scoreResultsCache.get(imageUrl), resultsList, closeScoreResults);
+			return;
+		}
+		const persistentKey = await cacheKey('cv-score', `${imageUrl}|${JSON.stringify(metadata)}`);
+		const persistentResult = await readPersistentCache(persistentKey);
+		if (persistentResult) {
+			log('Using persistent score results for', imageUrl);
+			scoreResultsCache.set(imageUrl, persistentResult);
+			loadingEl.style.display = 'none';
+			displayCVResults(persistentResult, resultsList, closeScoreResults);
 			return;
 		}
 
@@ -775,15 +888,13 @@ chrome.storage.sync.get({
 			// Fetch image via background script
 			const imageDataUrl = await fetchImageViaBackground(imageUrl);
 
-			// Get observation metadata
-			const metadata = getObservationMetadata();
-
 			// Call score_image API
 			const data = await callScoreImageAPI(imageDataUrl, metadata);
 			log('Score results:', data);
 
 			// Cache the results by image URL
 			scoreResultsCache.set(imageUrl, data);
+			await writePersistentCache(persistentKey, data);
 
 			loadingEl.style.display = 'none';
 			displayCVResults(data, resultsList, closeScoreResults);
@@ -806,23 +917,8 @@ chrome.storage.sync.get({
 	}
 
 	// Apply selected taxon to the identification form via page context (has jQuery access)
-	function applyTaxonToForm(taxon) {
-		let input = null;
-		if (isIdentifyPage()) {
-			input = document.querySelector('.IdentificationForm .TaxonAutocomplete input');
-			if (!input) {
-				// On /identify page, click the "Add ID" button to open the input
-				const addIdButton = document.querySelector('button:has(i.icon-identification)');
-				if (addIdButton) {
-					log('Clicking Add ID button');
-					log('Form before click:', document.querySelector('.IdentificationForm'));
-					addIdButton.click();
-					log('Form after click:', document.querySelector('.IdentificationForm'));
-				} else {
-					log('Add ID button not found');
-				}
-			}
-		} else {
+	function applyTaxonToForm(taxon, onSuccess) {
+		if (!isIdentifyPage()) {
 			// On observation page, find and click the "Suggest an Identification" tab
 			const tabs = document.querySelectorAll('.nav-tabs a');
 			for (const tab of tabs) {
@@ -833,25 +929,8 @@ chrome.storage.sync.get({
 			}
 		}
 
-		// Wait for UI to update (longer delay on /identify page for input to appear)
-		const delay = isIdentifyPage() ? (input ? 50 : 500) : 200;
-		log('Waiting', delay, 'ms for UI to update...');
+		const delay = isIdentifyPage() ? 0 : 200;
 		setTimeout(() => {
-			log('After delay - looking for TaxonAutocomplete');
-			// On /identify page, target the IdentificationForm specifically (not the SearchBar)
-			const containerSelector = isIdentifyPage()
-				? '.IdentificationForm .TaxonAutocomplete'
-				: '.TaxonAutocomplete';
-			const container = document.querySelector(containerSelector);
-			log('Using selector:', containerSelector);
-			log('Found container:', container);
-			const input = container?.querySelector('input');
-			log('Found input:', input);
-			log('Input value:', input?.value);
-			if (container) {
-				container.scrollIntoView({ behavior: 'smooth', block: 'center' });
-			}
-
 			// Send request to page context (domContext.js) which has jQuery access
 			const requestId = Math.random().toString(36).substring(2);
 
@@ -861,6 +940,7 @@ chrome.storage.sync.get({
 
 				if (event.detail.success) {
 					log('Taxon selection applied:', taxon.name);
+					if (onSuccess) onSuccess();
 				} else {
 					logError('Failed to apply taxon:', event.detail.error);
 					alert('Could not apply selection: ' + event.detail.error);
@@ -919,12 +999,22 @@ chrome.storage.sync.get({
 
 		(async function() {
 			try {
+				const persistentKey = await cacheKey('cv-crop', `${imageDataUrl}|${JSON.stringify(metadata)}`);
+				const persistentResult = await readPersistentCache(persistentKey);
+				if (persistentResult) {
+					cvResultsCache = persistentResult;
+					resultsLoading.style.display = 'none';
+					displayCVResults(persistentResult, resultsList);
+					return;
+				}
+
 				log('Calling score_image API');
 				const data = await callScoreImageAPI(imageDataUrl, metadata);
 				log('CV results:', data);
 
 				// Cache the results
 				cvResultsCache = data;
+				await writePersistentCache(persistentKey, data);
 
 				resultsLoading.style.display = 'none';
 				displayCVResults(data, resultsList);
@@ -955,22 +1045,24 @@ chrome.storage.sync.get({
 			: 'common first';
 		log('Name display preference:', nameStyle);
 
-		function formatTaxonName(commonName, scientificName, rankName) {
+		function formatTaxonName(commonName, scientificName, rankName, taxonId) {
+			const open = `<a class="result-taxon-link" href="https://www.inaturalist.org/taxa/${taxonId}" target="_blank" rel="noopener" onclick="event.stopPropagation();">`;
+			const close = '</a>';
 			if (nameStyle === 'scientific only' || !commonName) {
 				return `
-					<div class="result-name"><em>${scientificName}</em></div>
+					<div class="result-name">${open}<em>${scientificName}</em>${close}</div>
 					<div class="result-rank">${rankName}</div>
 				`;
 			}
 			if (nameStyle === 'scientific first') {
 				return `
-					<div class="result-name"><em>${scientificName}</em></div>
+					<div class="result-name">${open}<em>${scientificName}</em>${close}</div>
 					<div class="result-rank">${commonName}</div>
 				`;
 			}
 			return `
-				<div class="result-name">${commonName}</div>
-				<div class="result-rank"><em>${scientificName}</em></div>
+				<div class="result-name">${open}${commonName}${close}</div>
+				<div class="result-rank">${open}<em>${scientificName}</em>${close}</div>
 			`;
 		}
 
@@ -990,12 +1082,12 @@ chrome.storage.sync.get({
 			html += `
 				<li class="result-item" data-taxon-id="${ancestor.id}" data-is-ancestor="true">
 					<div class="result-border" style="background: #74ac00;"></div>
-					${photoUrl ? `<img class="result-photo" src="${photoUrl}" alt="">` : '<div class="result-photo"></div>'}
+					${photoUrl ? `<a href="https://www.inaturalist.org/taxa/${ancestor.id}" target="_blank" rel="noopener" onclick="event.stopPropagation();"><img class="result-photo" src="${photoUrl}" alt=""></a>` : '<div class="result-photo"></div>'}
 					<div class="result-info">
-						${formatTaxonName(commonName, scientificName, rankName)}
+						${formatTaxonName(commonName, scientificName, rankName, ancestor.id)}
+						<div class="result-hierarchy" data-taxon-id="${ancestor.id}"><span class="result-hierarchy-loading">Loading hierarchy...</span></div>
 					</div>
 					${ancestorScore ? `<span class="result-score">${ancestorScore.toFixed(1)}%</span>` : ''}
-					<a class="view-link" href="https://www.inaturalist.org/taxa/${ancestor.id}" target="_blank" onclick="event.stopPropagation();">View</a>
 				</li>
 			`;
 		}
@@ -1026,18 +1118,33 @@ chrome.storage.sync.get({
 			return `
 				<li class="result-item" data-score="${score}" data-taxon-id="${taxon.id}">
 					<div class="result-border" style="background: hsl(${hue}, 50%, 50%);"></div>
-					${photoUrl ? `<img class="result-photo" src="${photoUrl}" alt="">` : '<div class="result-photo"></div>'}
+					${photoUrl ? `<a href="https://www.inaturalist.org/taxa/${taxon.id}" target="_blank" rel="noopener" onclick="event.stopPropagation();"><img class="result-photo" src="${photoUrl}" alt=""></a>` : '<div class="result-photo"></div>'}
 					<div class="result-info">
-						${formatTaxonName(commonName, scientificName, rankName)}
+						${formatTaxonName(commonName, scientificName, rankName, taxon.id)}
 						${tagsHtml}
+						<div class="result-hierarchy" data-taxon-id="${taxon.id}"><span class="result-hierarchy-loading">Loading hierarchy...</span></div>
 					</div>
 					<span class="result-score">${score.toFixed(1)}%</span>
-					<a class="view-link" href="https://www.inaturalist.org/taxa/${taxon.id}" target="_blank" onclick="event.stopPropagation();">View</a>
 				</li>
 			`;
 		}).join('');
 
 		listEl.innerHTML = html;
+		populateTaxonHierarchies(data, listEl);
+		listEl._hierarchyClose = onClose;
+		if (!listEl.dataset.hierarchySelectionBound) {
+			listEl.dataset.hierarchySelectionBound = 'true';
+			listEl.addEventListener('click', event => {
+				const hierarchyButton = event.target.closest('.result-hierarchy-select');
+				if (!hierarchyButton) return;
+				event.preventDefault();
+				event.stopPropagation();
+				const taxon = taxonHierarchyCache.get(hierarchyButton.dataset.taxonId);
+				if (taxon) {
+					applyTaxonToForm(taxon, listEl._hierarchyClose);
+				}
+			});
+		}
 
 		// Store data for click handlers
 		listEl._cvData = data;
@@ -1057,12 +1164,8 @@ chrome.storage.sync.get({
 				}
 
 				if (taxon) {
-					if (onClose) {
-						onClose();
-					} else {
-						closeCropModal();
-					}
-					setTimeout(() => applyTaxonToForm(taxon), 100);
+					const closeResults = onClose || closeCropModal;
+					applyTaxonToForm(taxon, closeResults);
 				}
 			});
 		});
@@ -1130,6 +1233,152 @@ chrome.storage.sync.get({
 				ancestorRow.style.background = 'linear-gradient(to right, #74ac00, white 90%)';
 			}
 		});
+	}
+
+	async function populateTaxonHierarchies(data, listEl) {
+		const taxa = [
+			data.common_ancestor?.taxon,
+			...(data.results || []).slice(0, 10).map(result => result.taxon)
+		].filter(Boolean);
+
+		try {
+			const incompleteTaxonIds = [...new Set(taxa
+				.filter(taxon => !Array.isArray(taxon.ancestor_ids))
+				.map(taxon => taxon.id)
+				.filter(Boolean))];
+
+			if (incompleteTaxonIds.length) {
+				const fullTaxa = await fetchTaxaByIds(incompleteTaxonIds);
+				fullTaxa.forEach(taxon => taxonHierarchyCache.set(String(taxon.id), taxon));
+			}
+
+			const fullTaxaById = new Map(taxa.map(taxon => {
+				const fullTaxon = taxonHierarchyCache.get(String(taxon.id)) || taxon;
+				return [String(taxon.id), fullTaxon];
+			}));
+			const ancestorIds = [...new Set([...fullTaxaById.values()]
+				.flatMap(taxon => taxon.ancestor_ids || []))]
+				.filter(id => !taxonHierarchyCache.has(String(id)));
+
+			if (ancestorIds.length) {
+				const ancestors = await fetchTaxaByIds(ancestorIds);
+				ancestors.forEach(taxon => taxonHierarchyCache.set(String(taxon.id), taxon));
+			}
+
+			if (!listEl.isConnected) return;
+			const hierarchyByTaxonId = new Map();
+			taxa.forEach(taxon => {
+				const fullTaxon = fullTaxaById.get(String(taxon.id)) || taxon;
+				const hierarchy = (fullTaxon.ancestor_ids || [])
+					.map(id => taxonHierarchyCache.get(String(id)))
+					.filter(ancestor => ancestor && ancestor.id !== taxon.id && ancestor.id !== 48460);
+				hierarchyByTaxonId.set(String(taxon.id), hierarchy);
+			});
+
+			const suggestionTaxa = (data.results || []).slice(0, 10).map(result => result.taxon).filter(Boolean);
+			const suggestionHierarchies = suggestionTaxa
+				.map(taxon => hierarchyByTaxonId.get(String(taxon.id)) || [])
+				.filter(hierarchy => hierarchy.length);
+			const sharedHierarchy = findSharedHierarchy(suggestionHierarchies);
+			renderSharedHierarchy(listEl, sharedHierarchy);
+
+			taxa.forEach(taxon => {
+				const hierarchyEl = listEl.querySelector(`.result-hierarchy[data-taxon-id="${taxon.id}"]`);
+				if (!hierarchyEl) return;
+				const hierarchy = hierarchyByTaxonId.get(String(taxon.id)) || [];
+				const sharedPrefixLength = hierarchy.findIndex((ancestor, index) => {
+					return !sharedHierarchy[index] || sharedHierarchy[index].id !== ancestor.id;
+				});
+				const branchStart = sharedPrefixLength === -1
+					? Math.min(hierarchy.length, sharedHierarchy.length)
+					: sharedPrefixLength;
+				const branch = hierarchy.slice(branchStart);
+
+				hierarchyEl.innerHTML = branch.length
+					? renderHierarchyLinks(branch)
+					: '';
+			});
+		} catch (error) {
+			logWarn('Could not load taxon hierarchy:', error);
+			listEl.querySelectorAll('.result-hierarchy-loading').forEach(el => {
+				el.textContent = 'Hierarchy unavailable';
+			});
+		}
+	}
+
+	function findSharedHierarchy(hierarchies) {
+		if (!hierarchies.length) return [];
+		const shortestLength = Math.min(...hierarchies.map(hierarchy => hierarchy.length));
+		let sharedLength = 0;
+
+		while (
+			sharedLength < shortestLength
+			&& hierarchies.every(hierarchy => hierarchy[sharedLength].id === hierarchies[0][sharedLength].id)
+		) {
+			sharedLength += 1;
+		}
+
+		return hierarchies[0].slice(0, sharedLength);
+	}
+
+	function renderSharedHierarchy(listEl, hierarchy) {
+		listEl.querySelector('.result-shared-hierarchy')?.remove();
+		if (!hierarchy.length) return;
+
+		const sharedEl = document.createElement('li');
+		sharedEl.className = 'result-shared-hierarchy';
+		sharedEl.innerHTML = `
+			<span class="result-shared-label">Shared classification</span>
+			<div class="result-shared-path">${renderHierarchyLinks(hierarchy)}</div>
+		`;
+
+		const topSuggestionsHeader = Array.from(listEl.querySelectorAll('.section-header'))
+			.find(header => header.textContent.includes('top suggestions'));
+		if (topSuggestionsHeader) {
+			topSuggestionsHeader.insertAdjacentElement('afterend', sharedEl);
+		}
+	}
+
+	function renderHierarchyLinks(hierarchy) {
+		return hierarchy.map((ancestor, index) => {
+			const label = ancestor.preferred_common_name || ancestor.name;
+			const separator = index ? '<span class="result-hierarchy-separator">›</span>' : '';
+			return `${separator}<button type="button" class="result-hierarchy-select" data-taxon-id="${ancestor.id}" title="Use ${escapeHtml(ancestor.name || label)} as the identification">${escapeHtml(label)}</button>`;
+		}).join('');
+	}
+
+	async function fetchTaxaByIds(ids) {
+		const results = [];
+		const missingIds = [];
+		for (const id of ids) {
+			const key = `inat-taxon-${id}`;
+			const cached = await readPersistentCache(key);
+			if (cached) {
+				taxonHierarchyCache.set(String(id), cached);
+				results.push(cached);
+			} else {
+				missingIds.push(id);
+			}
+		}
+
+		for (let index = 0; index < missingIds.length; index += 30) {
+			const batch = missingIds.slice(index, index + 30);
+			const response = await fetch(`https://api.inaturalist.org/v1/taxa/${batch.join(',')}`);
+			if (!response.ok) throw new Error(`Taxa API returned HTTP ${response.status}`);
+			const payload = await response.json();
+			for (const taxon of payload.results || []) {
+				taxonHierarchyCache.set(String(taxon.id), taxon);
+				results.push(taxon);
+				await writePersistentCache(`inat-taxon-${taxon.id}`, taxon);
+			}
+		}
+		return results;
+	}
+
+	function escapeHtml(value) {
+		const element = document.createElement('div');
+		element.textContent = String(value == null ? '' : value);
+		return element.innerHTML;
 	}
 
 	// Helper to capitalize rank names

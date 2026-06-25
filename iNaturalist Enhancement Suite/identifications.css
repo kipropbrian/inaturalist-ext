@@ -40,6 +40,11 @@
 	flex: 1 1 150px;
 }
 
+.inat-id-field--quality,
+.inat-id-field--sort {
+	flex: 1 1 145px;
+}
+
 .inat-id-field--check {
 	flex: 0 0 auto;
 }
@@ -533,6 +538,59 @@
 	font-weight: 700;
 	color: #b42318;
 	text-transform: uppercase;
+}
+
+/* ── Pagination ──────────────────────────────────────────────────────────── */
+
+#inat-id-pagination {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 14px 0 2px;
+}
+
+#inat-id-pagination[hidden] {
+	display: none;
+}
+
+#inat-id-pagination button {
+	height: 30px;
+	min-width: 30px;
+	padding: 0 9px;
+	background: #fff;
+	border-color: #c7c7c7;
+	color: #555;
+}
+
+#inat-id-pagination button:hover:not(:disabled) {
+	border-color: #74ac00;
+	color: #4f7200;
+	background: #f7faef;
+}
+
+#inat-id-pagination button.active {
+	background: #74ac00;
+	border-color: #74ac00;
+	color: #fff;
+	font-weight: 700;
+}
+
+#inat-id-pagination button:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+#inat-id-pagination > span {
+	color: #777;
+	font-size: 11px;
+	margin: 0 4px;
+}
+
+.inat-id-page-numbers {
+	display: flex;
+	gap: 4px;
 }
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
