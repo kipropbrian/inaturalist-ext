@@ -95,45 +95,53 @@ chrome.storage.sync.get({
 		let observedPagination = null;
 		let loadingPage = false;
 		let lastTriggeredPage = null;
-		let previousPage = null;
 		let cooldownUntil = 0;
 		let overlayShownAt = 0;
-		let finishTimer = null;
+		let fallbackTimer = null;
 
-		const maybeLoadNextPage = deltaY => {
-			if (deltaY <= 0) return;
-			if (Date.now() < cooldownUntil) return;
+		const maybeLoadNextPage = event => {
+			if (event.deltaY <= 0) return false;
+			if (Date.now() < cooldownUntil) return false;
 			const pagination = observedPagination;
-			if (!pagination || loadingPage) return;
+			if (!pagination || loadingPage) return false;
 			const documentHeight = document.documentElement.scrollHeight;
 			const viewportBottom = window.scrollY + window.innerHeight;
-			if (viewportBottom < documentHeight - 8) return;
+			if (viewportBottom < documentHeight - 2) return false;
 
 			const currentPage = getCurrentIdentifyPage(pagination);
 			const nextItem = pagination.querySelector('li.rc-pagination-next[aria-disabled="false"]');
-			if (!nextItem || currentPage === lastTriggeredPage) return;
+			if (!nextItem || currentPage === lastTriggeredPage) return false;
 
+			event.preventDefault();
+			window.scrollTo({ top: documentHeight, behavior: 'auto' });
 			loadingPage = true;
 			lastTriggeredPage = currentPage;
-			previousPage = currentPage;
+			const previousSignature = getIdentifyGridSignature();
 			showAutoPagingStatus(pagination, 'Loading next page...');
 			showAutoPagingOverlay('Loading next page...');
 			overlayShownAt = Date.now();
 			requestAnimationFrame(() => {
 				setTimeout(() => nextItem.click(), 100);
 			});
-			setTimeout(() => {
+
+			clearTimeout(fallbackTimer);
+			fallbackTimer = setTimeout(() => {
 				if (!loadingPage) return;
-				loadingPage = false;
-				lastTriggeredPage = null;
-				hideAutoPagingOverlay();
-				showAutoPagingStatus(pagination, 'Could not load the next page automatically');
-			}, 15000);
+				finishAutoPaging(pagination, 'Timed out waiting for the next page. Auto-load available in 10s');
+			}, 25000);
+
+			waitForIdentifyPageReady(currentPage, previousSignature)
+				.then(() => finishAutoPaging(observedPagination || pagination, 'Next page loaded. Auto-load available in 10s'))
+				.catch(error => {
+					console.warn('[iNat Enhancement] Auto-pagination readiness wait failed:', error);
+					finishAutoPaging(observedPagination || pagination, 'Next page loaded. Auto-load available in 10s');
+				});
+			return true;
 		};
 
 		window.addEventListener('wheel', event => {
-			maybeLoadNextPage(event.deltaY);
-		}, { passive: true });
+			maybeLoadNextPage(event);
+		}, { passive: false });
 
 		const watchPagination = () => {
 			const pagination = document.querySelector('.PaginationControl .rc-pagination:not(.collapse)');
@@ -142,26 +150,149 @@ chrome.storage.sync.get({
 			observedPagination = pagination;
 		};
 
-		const pageObserver = new MutationObserver(() => {
-			watchPagination();
-			if (!loadingPage || !observedPagination) return;
-
-			const currentPage = getCurrentIdentifyPage(observedPagination);
-			if (currentPage && currentPage !== previousPage) {
-				clearTimeout(finishTimer);
-				const minimumRemaining = Math.max(0, 1500 - (Date.now() - overlayShownAt));
-				finishTimer = setTimeout(() => {
-					loadingPage = false;
-					lastTriggeredPage = null;
-					cooldownUntil = Date.now() + 10000;
-					window.scrollTo({ top: 0, behavior: 'smooth' });
-					startAutoPagingCooldown(observedPagination);
-				}, Math.max(500, minimumRemaining));
-			}
-		});
+		const pageObserver = new MutationObserver(watchPagination);
 
 		pageObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
 		watchPagination();
+
+		async function finishAutoPaging(pagination, statusMessage) {
+			if (!loadingPage) return;
+			clearTimeout(fallbackTimer);
+			loadingPage = false;
+			lastTriggeredPage = null;
+			cooldownUntil = Date.now() + 10000;
+			const minimumRemaining = Math.max(0, 1200 - (Date.now() - overlayShownAt));
+			if (minimumRemaining) await wait(minimumRemaining);
+			showAutoPagingOverlay('Page ready. Returning to top...');
+			await smoothScrollToTop();
+			hideAutoPagingOverlay();
+			startAutoPagingCooldown(pagination, statusMessage);
+		}
+	}
+
+	function waitForIdentifyPageReady(previousPage, previousSignature) {
+		return waitForCondition(async () => {
+			const pagination = document.querySelector('.PaginationControl .rc-pagination:not(.collapse)');
+			const currentPage = pagination ? getCurrentIdentifyPage(pagination) : null;
+			const signature = getIdentifyGridSignature();
+			if (!currentPage || currentPage === previousPage) return false;
+			if (!signature || signature === previousSignature) return false;
+			return true;
+		}, 20000)
+			.then(() => waitForStableIdentifyGrid(700, 5000))
+			.then(() => waitForIdentifyGridMedia(14000));
+	}
+
+	function getIdentifyGridSignature() {
+		const grid = document.querySelector('#Identify .ObservationsGrid');
+		if (!grid) return '';
+		const items = Array.from(grid.querySelectorAll('.ObservationsGridItem'));
+		return items.map(item => (
+			item.querySelector('a[href^="/observations/"]')?.getAttribute('href') || ''
+		)).filter(Boolean).join('|');
+	}
+
+	function waitForStableIdentifyGrid(quietMs, timeoutMs) {
+		return new Promise(resolve => {
+			let lastSignature = getIdentifyGridSignature();
+			let lastChangedAt = Date.now();
+			const startedAt = Date.now();
+			const timer = setInterval(() => {
+				const signature = getIdentifyGridSignature();
+				if (signature !== lastSignature) {
+					lastSignature = signature;
+					lastChangedAt = Date.now();
+				}
+				if ((signature && Date.now() - lastChangedAt >= quietMs) || Date.now() - startedAt >= timeoutMs) {
+					clearInterval(timer);
+					resolve();
+				}
+			}, 120);
+		});
+	}
+
+	function waitForIdentifyGridMedia(timeoutMs) {
+		const grid = document.querySelector('#Identify .ObservationsGrid');
+		if (!grid) return Promise.resolve();
+		const urls = new Set();
+		grid.querySelectorAll('.ObservationsGridItem .media.photo').forEach(media => {
+			const url = extractCssUrl(getComputedStyle(media).backgroundImage);
+			if (url) urls.add(url);
+		});
+		grid.querySelectorAll('.ObservationsGridItem img').forEach(img => {
+			if (img.currentSrc || img.src) urls.add(img.currentSrc || img.src);
+		});
+		if (!urls.size) return Promise.resolve();
+		showAutoPagingOverlay(`Loading ${urls.size} image${urls.size === 1 ? '' : 's'}...`);
+		return Promise.race([
+			Promise.all(Array.from(urls).map(url => waitForImage(url))).then(() => undefined),
+			wait(timeoutMs)
+		]);
+	}
+
+	function waitForImage(url) {
+		return new Promise(resolve => {
+			const image = new Image();
+			image.onload = resolve;
+			image.onerror = resolve;
+			image.src = url;
+			if (image.complete) resolve();
+		});
+	}
+
+	function extractCssUrl(value) {
+		if (!value || value === 'none') return null;
+		const match = value.match(/^url\(["']?(.*?)["']?\)$/);
+		return match ? match[1] : null;
+	}
+
+	function waitForCondition(check, timeoutMs) {
+		return new Promise((resolve, reject) => {
+			const startedAt = Date.now();
+			const timer = setInterval(async () => {
+				try {
+					if (await check()) {
+						clearInterval(timer);
+						resolve();
+						return;
+					}
+					if (Date.now() - startedAt >= timeoutMs) {
+						clearInterval(timer);
+						reject(new Error('Timed out waiting for condition'));
+					}
+				} catch (error) {
+					clearInterval(timer);
+					reject(error);
+				}
+			}, 150);
+		});
+	}
+
+	function wait(ms) {
+		return new Promise(resolve => setTimeout(resolve, ms));
+	}
+
+	function smoothScrollToTop() {
+		return new Promise(resolve => {
+			const startY = window.scrollY;
+			if (startY <= 0) {
+				resolve();
+				return;
+			}
+			const duration = Math.min(900, Math.max(420, startY * 0.28));
+			const startedAt = performance.now();
+			const step = now => {
+				const progress = Math.min(1, (now - startedAt) / duration);
+				const eased = 1 - Math.pow(1 - progress, 3);
+				window.scrollTo(0, Math.round(startY * (1 - eased)));
+				if (progress < 1) {
+					requestAnimationFrame(step);
+				} else {
+					resolve();
+				}
+			};
+			requestAnimationFrame(step);
+		});
 	}
 
 	function showAutoPagingOverlay(message) {
@@ -176,8 +307,8 @@ chrome.storage.sync.get({
 				display: flex;
 				align-items: center;
 				justify-content: center;
-				background: rgba(255, 255, 255, 0.72);
-				backdrop-filter: blur(2px);
+				background: rgba(255, 255, 255, 0.48);
+				backdrop-filter: blur(1px);
 			`;
 			overlay.innerHTML = `
 				<div style="display:flex;align-items:center;gap:10px;padding:14px 18px;background:#fff;border:1px solid #d8e4c0;border-radius:7px;box-shadow:0 8px 30px rgba(0,0,0,.16);font-size:14px;color:#4f7200;font-weight:600;">
@@ -231,6 +362,7 @@ chrome.storage.sync.get({
 	}
 
 	function showAutoPagingStatus(pagination, message) {
+		if (!pagination) return;
 		const control = pagination.closest('.PaginationControl');
 		if (!control) return;
 

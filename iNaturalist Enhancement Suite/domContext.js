@@ -248,6 +248,9 @@ function isVisibleElement(element) {
 // Extracted autocomplete logic for reuse
 function performAutocomplete(input, container, taxon, requestId) {
 	try {
+		if (typeof window.$ !== 'function') {
+			throw new Error('iNaturalist autocomplete is not ready yet');
+		}
 		const $input = $(input);
 
 		// iNaturalist's TaxonAutocomplete listens for this event and stores the
@@ -266,6 +269,7 @@ function performAutocomplete(input, container, taxon, requestId) {
 			throw new Error(`Taxon selection could not be verified for ID ${taxon.id}`);
 		}
 
+		closeAutocompleteMenu($input, container);
 		input.blur();
 		container.scrollIntoView({ behavior: 'smooth', block: 'center' });
 		document.dispatchEvent(new CustomEvent('selectTaxonResponse', {
@@ -279,6 +283,55 @@ function performAutocomplete(input, container, taxon, requestId) {
 		}));
 	}
 }
+
+function closeAutocompleteMenu($input, container) {
+	try {
+		const autocomplete = $input.data('uiAutocomplete') || $input.data('autocomplete');
+		if (autocomplete) {
+			if (typeof $input.autocomplete === 'function') {
+				$input.autocomplete('close');
+			}
+			if (autocomplete.menu?.element) {
+				autocomplete.menu.element.empty().hide();
+			}
+			autocomplete.term = $input.val();
+			autocomplete.pending = 0;
+		}
+		$(container)
+			.find('.ui-autocomplete, .taxon-autocomplete, .ac-menu')
+			.empty()
+			.hide();
+		$('.ui-autocomplete:visible, .taxon-autocomplete:visible, .ac-menu:visible')
+			.filter((_, el) => !$(el).closest('.modal.in, .ObservationModal.in').length)
+			.hide();
+	} catch (error) {
+		console.warn('[iNat Enhancement] Could not close autocomplete menu:', error);
+	}
+}
+
+function closeAllTaxonAutocompleteMenus() {
+	document.querySelectorAll('.ui-autocomplete.taxon-autocomplete, .taxon-autocomplete, .ac-menu')
+		.forEach(menu => {
+			menu.classList.remove('open');
+			menu.style.display = 'none';
+		});
+}
+
+function scheduleTaxonAutocompleteCleanup() {
+	[25, 125, 275].forEach(delay => setTimeout(closeAllTaxonAutocompleteMenus, delay));
+}
+
+document.addEventListener('click', event => {
+	if (!event.target.closest('.ui-autocomplete .ui-menu-item, .ui-autocomplete .ac-result, .taxon-autocomplete .ui-menu-item, .taxon-autocomplete .ac-result')) return;
+	scheduleTaxonAutocompleteCleanup();
+}, true);
+
+document.addEventListener('click', event => {
+	if (!event.target.closest('.ObservationModal .close-button, .ObservationModal button.close, .modal-backdrop')) return;
+	scheduleTaxonAutocompleteCleanup();
+}, true);
+
+document.addEventListener('hidden.bs.modal', scheduleTaxonAutocompleteCleanup, true);
 
 const oldFetch = window.fetch;
 window.fetch = async (url, options) => {
