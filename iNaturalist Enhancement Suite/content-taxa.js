@@ -2,6 +2,10 @@ chrome.storage.sync.get({
 	enableCount: true,
 	enableLogging: false
 }, async function(items) {
+	if (chrome.runtime.lastError) {
+		console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
+		return;
+	}
 	// Use shared logging from logging.js
 	const logDebug = window.iNatLogDebug || console.debug;
 

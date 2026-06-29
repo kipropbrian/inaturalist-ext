@@ -9,7 +9,8 @@
     "128": "icon128.png"
   },
   "permissions": [
-    "storage"
+    "storage",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "https://*.inaturalist.org/*"

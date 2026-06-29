@@ -6,7 +6,11 @@ chrome.storage.sync.get({
 	scoreImagePosition: 'below',
 	scoreImageColor: 'outlined'
 }, function(items) {
-	if (!items.enableScoreImageTools) {
+	if (chrome.runtime.lastError) {
+		console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
+		return;
+	}
+	if (!items || !items.enableScoreImageTools) {
 		return;
 	}
 
@@ -29,12 +33,81 @@ chrome.storage.sync.get({
 		return `inat-${namespace}-${hash}`;
 	}
 
+	const MAX_CACHE_SIZE = 100 * 1024 * 1024; // 100 MB
+	const TARGET_CACHE_SIZE = 80 * 1024 * 1024; // 80 MB
+
+	function evictOldCacheIfNeeded() {
+		return new Promise(resolve => {
+			chrome.storage.local.getBytesInUse(null, bytes => {
+				if (chrome.runtime.lastError) {
+					resolve();
+					return;
+				}
+				if (bytes < MAX_CACHE_SIZE) {
+					resolve();
+					return;
+				}
+
+				log('Cache size limit approached. Current size:', bytes, 'bytes. Starting eviction...');
+				chrome.storage.local.get(null, allData => {
+					if (chrome.runtime.lastError || !allData) {
+						resolve();
+						return;
+					}
+
+					const cacheEntries = [];
+					for (const [key, item] of Object.entries(allData)) {
+						if (key.startsWith('inat-') && item && typeof item.savedAt === 'number') {
+							cacheEntries.push({ key, savedAt: item.savedAt, size: JSON.stringify(item).length });
+						}
+					}
+
+					// Sort oldest first
+					cacheEntries.sort((a, b) => a.savedAt - b.savedAt);
+
+					let currentBytes = bytes;
+					const keysToRemove = [];
+					for (const entry of cacheEntries) {
+						if (currentBytes < TARGET_CACHE_SIZE) {
+							break;
+						}
+						keysToRemove.push(entry.key);
+						currentBytes -= entry.size;
+					}
+
+					if (keysToRemove.length > 0) {
+						log('Evicting', keysToRemove.length, 'old cache entries...');
+						chrome.storage.local.remove(keysToRemove, () => {
+							if (chrome.runtime.lastError) {
+								logError('Failed to evict old cache entries:', chrome.runtime.lastError.message);
+							}
+							resolve();
+						});
+					} else {
+						resolve();
+					}
+				});
+			});
+		});
+	}
+
 	function readPersistentCache(key) {
 		return new Promise(resolve => {
 			chrome.storage.local.get(key, result => {
-				const entry = result[key];
+				if (chrome.runtime.lastError) {
+					logError('Failed to read from persistent cache:', chrome.runtime.lastError.message);
+					resolve(null);
+					return;
+				}
+				const entry = result ? result[key] : null;
 				if (!entry || Date.now() - entry.savedAt > CACHE_TTL) {
-					if (entry) chrome.storage.local.remove(key);
+					if (entry) {
+						chrome.storage.local.remove(key, () => {
+							if (chrome.runtime.lastError) {
+								logError('Failed to remove from persistent cache:', chrome.runtime.lastError.message);
+							}
+						});
+					}
 					resolve(null);
 					return;
 				}
@@ -44,8 +117,14 @@ chrome.storage.sync.get({
 	}
 
 	function writePersistentCache(key, value) {
-		return new Promise(resolve => {
-			chrome.storage.local.set({ [key]: { savedAt: Date.now(), value } }, resolve);
+		return new Promise(async resolve => {
+			await evictOldCacheIfNeeded();
+			chrome.storage.local.set({ [key]: { savedAt: Date.now(), value } }, () => {
+				if (chrome.runtime.lastError) {
+					logError('Failed to write to persistent cache:', chrome.runtime.lastError.message);
+				}
+				resolve();
+			});
 		});
 	}
 

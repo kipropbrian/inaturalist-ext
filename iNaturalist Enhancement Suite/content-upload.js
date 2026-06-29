@@ -14,6 +14,10 @@ chrome.storage.sync.get({
 	enableFilenameDate: true,
 	enableLogging: false
 }, function(items) {
+	if (chrome.runtime.lastError) {
+		console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
+		return;
+	}
 	const logDebug = window.iNatLogDebug || console.debug;
 	const log = window.iNatLog || console.log;
 

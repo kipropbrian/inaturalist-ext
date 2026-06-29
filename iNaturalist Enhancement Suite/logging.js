@@ -9,6 +9,10 @@
 
 	// Get logging preference from storage
 	chrome.storage.sync.get({ enableLogging: false }, function(items) {
+		if (chrome.runtime.lastError) {
+			console.error(LOG_PREFIX, 'Failed to get logging preference from storage:', chrome.runtime.lastError.message);
+			return;
+		}
 		LOGGING_ENABLED = items.enableLogging;
 		window.__iNatEnhancement_LOGGING_ENABLED = LOGGING_ENABLED;
 	});

@@ -29,6 +29,12 @@ function saveOptions() {
         enableSimilarSpeciesTab,
         enableLogging
     }, function() {
+        if (chrome.runtime.lastError) {
+            const status = document.getElementById('status');
+            status.textContent = 'Error saving options: ' + chrome.runtime.lastError.message;
+            console.error('Failed to save options:', chrome.runtime.lastError.message);
+            return;
+        }
         const status = document.getElementById('status');
         status.textContent = 'Options saved.';
         setTimeout(function() {
@@ -54,6 +60,10 @@ function restoreOptions() {
         enableSimilarSpeciesTab: true,
         enableLogging: false
     }, function(items) {
+        if (chrome.runtime.lastError) {
+            console.error('Failed to restore options:', chrome.runtime.lastError.message);
+            return;
+        }
         document.getElementById('color-vision').checked = items.enableColorVision;
         document.getElementById('display-mode-' + items.colorDisplayMode).checked = true;
         document.getElementById('color-blind').checked = items.enableColorBlindMode;

@@ -5,6 +5,10 @@ chrome.storage.sync.get({
 	enableIdentifierStats: true,
 	enableLogging: false
 }, function(items) {
+	if (chrome.runtime.lastError) {
+		console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
+		return;
+	}
 	// Use shared logging from logging.js
 	const logDebug = window.iNatLogDebug || console.debug;
 	const log = window.iNatLog || console.log;
@@ -92,50 +96,78 @@ chrome.storage.sync.get({
 	}
 
 	function enableIdentifyAutoPaging() {
+		document.documentElement.style.overscrollBehaviorY = 'none';
 		let observedPagination = null;
 		let loadingPage = false;
+		let pageLoaded = false;
 		let lastTriggeredPage = null;
-		let cooldownUntil = 0;
-		let overlayShownAt = 0;
+		let lastActivePage = null;
+		let lastGridSignature = null;
 		let fallbackTimer = null;
+		let debounceTimer = null;
 
 		const maybeLoadNextPage = event => {
-			if (event.deltaY <= 0) return false;
-			if (Date.now() < cooldownUntil) return false;
-			const pagination = observedPagination;
-			if (!pagination || loadingPage) return false;
-			const documentHeight = document.documentElement.scrollHeight;
-			const viewportBottom = window.scrollY + window.innerHeight;
-			if (viewportBottom < documentHeight - 2) return false;
+			if (loadingPage) {
+				event.preventDefault();
+				
+				// Keep resetting the lock release timer as long as wheel/swipe events continue
+				if (pageLoaded) {
+					clearTimeout(debounceTimer);
+					debounceTimer = setTimeout(() => {
+						loadingPage = false;
+						lastTriggeredPage = null;
+						document.documentElement.style.overflowY = '';
+						hideAutoPagingOverlay();
+						if (observedPagination) {
+							showAutoPagingStatus(observedPagination, 'Scroll beyond the bottom to load the next page');
+						}
+					}, 150);
+				}
+				return true;
+			}
+
+			const deltaY = getWheelDeltaPixels(event);
+			if (deltaY <= 0) return false;
+
+			const pagination = observedPagination || document.querySelector('.PaginationControl .rc-pagination:not(.collapse)');
+			if (!pagination) return false;
+
+			const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+			const reachesBottom = window.scrollY + deltaY >= maxScrollY - 10;
+			if (!reachesBottom) return false;
 
 			const currentPage = getCurrentIdentifyPage(pagination);
 			const nextItem = pagination.querySelector('li.rc-pagination-next[aria-disabled="false"]');
 			if (!nextItem || currentPage === lastTriggeredPage) return false;
 
 			event.preventDefault();
-			window.scrollTo({ top: documentHeight, behavior: 'auto' });
+
 			loadingPage = true;
+			pageLoaded = false;
 			lastTriggeredPage = currentPage;
-			const previousSignature = getIdentifyGridSignature();
-			showAutoPagingStatus(pagination, 'Loading next page...');
+			lastGridSignature = getIdentifyGridSignature();
+
+			// Temporarily disable scroll to kill momentum scrolling and freeze page
+			document.documentElement.style.overflowY = 'hidden';
+
+			// Scroll immediately to top
+			window.scrollTo(0, 0);
+
 			showAutoPagingOverlay('Loading next page...');
-			overlayShownAt = Date.now();
-			requestAnimationFrame(() => {
-				setTimeout(() => nextItem.click(), 100);
-			});
+			showAutoPagingStatus(pagination, 'Loading next page...');
+			nextItem.click();
 
 			clearTimeout(fallbackTimer);
 			fallbackTimer = setTimeout(() => {
-				if (!loadingPage) return;
-				finishAutoPaging(pagination, 'Timed out waiting for the next page. Auto-load available in 10s');
-			}, 25000);
+				loadingPage = false;
+				lastTriggeredPage = null;
+				document.documentElement.style.overflowY = '';
+				hideAutoPagingOverlay();
+				if (observedPagination) {
+					showAutoPagingStatus(observedPagination, 'Scroll beyond the bottom to load the next page');
+				}
+			}, 10000);
 
-			waitForIdentifyPageReady(currentPage, previousSignature)
-				.then(() => finishAutoPaging(observedPagination || pagination, 'Next page loaded. Auto-load available in 10s'))
-				.catch(error => {
-					console.warn('[iNat Enhancement] Auto-pagination readiness wait failed:', error);
-					finishAutoPaging(observedPagination || pagination, 'Next page loaded. Auto-load available in 10s');
-				});
 			return true;
 		};
 
@@ -145,42 +177,57 @@ chrome.storage.sync.get({
 
 		const watchPagination = () => {
 			const pagination = document.querySelector('.PaginationControl .rc-pagination:not(.collapse)');
-			if (pagination === observedPagination) return;
+			if (!pagination) return;
 
-			observedPagination = pagination;
+			if (pagination !== observedPagination) {
+				observedPagination = pagination;
+				showAutoPagingStatus(pagination, 'Scroll beyond the bottom to load the next page');
+				lastActivePage = getCurrentIdentifyPage(pagination);
+			}
+
+			const currentPage = getCurrentIdentifyPage(pagination);
+			const currentGridSignature = getIdentifyGridSignature();
+
+			// Detect if page was changed (either automatically or manually)
+			if (currentPage && currentPage !== lastActivePage) {
+				if (loadingPage && !pageLoaded) {
+					// Auto-paging change detected, but we wait for observations to actually load
+					if (currentGridSignature !== lastGridSignature) {
+						pageLoaded = true;
+						clearTimeout(fallbackTimer);
+						hideAutoPagingOverlay();
+
+						// Release lock only after 150ms of scroll inactivity
+						clearTimeout(debounceTimer);
+						debounceTimer = setTimeout(() => {
+							loadingPage = false;
+							lastTriggeredPage = null;
+							document.documentElement.style.overflowY = '';
+							showAutoPagingStatus(pagination, 'Scroll beyond the bottom to load the next page');
+						}, 150);
+						lastActivePage = currentPage;
+					}
+				} else if (!loadingPage) {
+					// Manual page change detected (user clicked Next / Prev)
+					window.scrollTo(0, 0);
+					
+					// Lock auto-paging briefly to prevent accidental trigger from click momentum
+					loadingPage = true;
+					pageLoaded = true;
+					clearTimeout(debounceTimer);
+					debounceTimer = setTimeout(() => {
+						loadingPage = false;
+						lastTriggeredPage = null;
+						document.documentElement.style.overflowY = '';
+					}, 800);
+					lastActivePage = currentPage;
+				}
+			}
 		};
 
 		const pageObserver = new MutationObserver(watchPagination);
-
 		pageObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
 		watchPagination();
-
-		async function finishAutoPaging(pagination, statusMessage) {
-			if (!loadingPage) return;
-			clearTimeout(fallbackTimer);
-			loadingPage = false;
-			lastTriggeredPage = null;
-			cooldownUntil = Date.now() + 10000;
-			const minimumRemaining = Math.max(0, 1200 - (Date.now() - overlayShownAt));
-			if (minimumRemaining) await wait(minimumRemaining);
-			showAutoPagingOverlay('Page ready. Returning to top...');
-			await smoothScrollToTop();
-			hideAutoPagingOverlay();
-			startAutoPagingCooldown(pagination, statusMessage);
-		}
-	}
-
-	function waitForIdentifyPageReady(previousPage, previousSignature) {
-		return waitForCondition(async () => {
-			const pagination = document.querySelector('.PaginationControl .rc-pagination:not(.collapse)');
-			const currentPage = pagination ? getCurrentIdentifyPage(pagination) : null;
-			const signature = getIdentifyGridSignature();
-			if (!currentPage || currentPage === previousPage) return false;
-			if (!signature || signature === previousSignature) return false;
-			return true;
-		}, 20000)
-			.then(() => waitForStableIdentifyGrid(700, 5000))
-			.then(() => waitForIdentifyGridMedia(14000));
 	}
 
 	function getIdentifyGridSignature() {
@@ -192,107 +239,35 @@ chrome.storage.sync.get({
 		)).filter(Boolean).join('|');
 	}
 
-	function waitForStableIdentifyGrid(quietMs, timeoutMs) {
-		return new Promise(resolve => {
-			let lastSignature = getIdentifyGridSignature();
-			let lastChangedAt = Date.now();
-			const startedAt = Date.now();
-			const timer = setInterval(() => {
-				const signature = getIdentifyGridSignature();
-				if (signature !== lastSignature) {
-					lastSignature = signature;
-					lastChangedAt = Date.now();
-				}
-				if ((signature && Date.now() - lastChangedAt >= quietMs) || Date.now() - startedAt >= timeoutMs) {
-					clearInterval(timer);
-					resolve();
-				}
-			}, 120);
-		});
+
+
+	function getWheelDeltaPixels(event) {
+		if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * 16;
+		if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return event.deltaY * window.innerHeight;
+		return event.deltaY;
 	}
 
-	function waitForIdentifyGridMedia(timeoutMs) {
-		const grid = document.querySelector('#Identify .ObservationsGrid');
-		if (!grid) return Promise.resolve();
-		const urls = new Set();
-		grid.querySelectorAll('.ObservationsGridItem .media.photo').forEach(media => {
-			const url = extractCssUrl(getComputedStyle(media).backgroundImage);
-			if (url) urls.add(url);
-		});
-		grid.querySelectorAll('.ObservationsGridItem img').forEach(img => {
-			if (img.currentSrc || img.src) urls.add(img.currentSrc || img.src);
-		});
-		if (!urls.size) return Promise.resolve();
-		showAutoPagingOverlay(`Loading ${urls.size} image${urls.size === 1 ? '' : 's'}...`);
-		return Promise.race([
-			Promise.all(Array.from(urls).map(url => waitForImage(url))).then(() => undefined),
-			wait(timeoutMs)
-		]);
+	function getCurrentIdentifyPage(pagination) {
+		const activePage = pagination.querySelector('.rc-pagination-item-active');
+		return activePage ? activePage.textContent.trim() : null;
 	}
 
-	function waitForImage(url) {
-		return new Promise(resolve => {
-			const image = new Image();
-			image.onload = resolve;
-			image.onerror = resolve;
-			image.src = url;
-			if (image.complete) resolve();
-		});
-	}
+	function showAutoPagingStatus(pagination, message) {
+		if (!pagination) return;
+		const control = pagination.closest('.PaginationControl');
+		if (!control) return;
 
-	function extractCssUrl(value) {
-		if (!value || value === 'none') return null;
-		const match = value.match(/^url\(["']?(.*?)["']?\)$/);
-		return match ? match[1] : null;
-	}
-
-	function waitForCondition(check, timeoutMs) {
-		return new Promise((resolve, reject) => {
-			const startedAt = Date.now();
-			const timer = setInterval(async () => {
-				try {
-					if (await check()) {
-						clearInterval(timer);
-						resolve();
-						return;
-					}
-					if (Date.now() - startedAt >= timeoutMs) {
-						clearInterval(timer);
-						reject(new Error('Timed out waiting for condition'));
-					}
-				} catch (error) {
-					clearInterval(timer);
-					reject(error);
-				}
-			}, 150);
-		});
-	}
-
-	function wait(ms) {
-		return new Promise(resolve => setTimeout(resolve, ms));
-	}
-
-	function smoothScrollToTop() {
-		return new Promise(resolve => {
-			const startY = window.scrollY;
-			if (startY <= 0) {
-				resolve();
-				return;
-			}
-			const duration = Math.min(900, Math.max(420, startY * 0.28));
-			const startedAt = performance.now();
-			const step = now => {
-				const progress = Math.min(1, (now - startedAt) / duration);
-				const eased = 1 - Math.pow(1 - progress, 3);
-				window.scrollTo(0, Math.round(startY * (1 - eased)));
-				if (progress < 1) {
-					requestAnimationFrame(step);
-				} else {
-					resolve();
-				}
-			};
-			requestAnimationFrame(step);
-		});
+		let status = control.querySelector('.inat-identify-auto-page-status');
+		if (!status) {
+			status = document.createElement('div');
+			status.className = 'inat-identify-auto-page-status';
+			status.style.cssText = 'margin: 8px 0; color: #777; font-size: 12px;';
+			status.setAttribute('aria-live', 'polite');
+			control.appendChild(status);
+		}
+		if (status.textContent !== message) {
+			status.textContent = message;
+		}
 	}
 
 	function showAutoPagingOverlay(message) {
@@ -307,7 +282,7 @@ chrome.storage.sync.get({
 				display: flex;
 				align-items: center;
 				justify-content: center;
-				background: rgba(255, 255, 255, 0.48);
+				background: rgba(255, 255, 255, 0.4);
 				backdrop-filter: blur(1px);
 			`;
 			overlay.innerHTML = `
@@ -338,43 +313,6 @@ chrome.storage.sync.get({
 	function hideAutoPagingOverlay() {
 		const overlay = document.getElementById('inat-identify-auto-page-overlay');
 		if (overlay) overlay.style.display = 'none';
-	}
-
-	function startAutoPagingCooldown(pagination) {
-		let secondsRemaining = 10;
-		hideAutoPagingOverlay();
-		showAutoPagingStatus(pagination, `Next page loaded. Auto-load available in ${secondsRemaining}s`);
-
-		const timer = setInterval(() => {
-			secondsRemaining -= 1;
-			if (secondsRemaining <= 0) {
-				clearInterval(timer);
-				showAutoPagingStatus(pagination, 'Scroll beyond the bottom to load the next page');
-				return;
-			}
-			showAutoPagingStatus(pagination, `Next page loaded. Auto-load available in ${secondsRemaining}s`);
-		}, 1000);
-	}
-
-	function getCurrentIdentifyPage(pagination) {
-		const activePage = pagination.querySelector('.rc-pagination-item-active');
-		return activePage ? activePage.textContent.trim() : null;
-	}
-
-	function showAutoPagingStatus(pagination, message) {
-		if (!pagination) return;
-		const control = pagination.closest('.PaginationControl');
-		if (!control) return;
-
-		let status = control.querySelector('.inat-identify-auto-page-status');
-		if (!status) {
-			status = document.createElement('div');
-			status.className = 'inat-identify-auto-page-status';
-			status.style.cssText = 'margin: 8px 0; color: #777; font-size: 12px;';
-			status.setAttribute('aria-live', 'polite');
-			control.appendChild(status);
-		}
-		status.textContent = message;
 	}
 
 	document.addEventListener('observationFetch', event => {
@@ -493,6 +431,10 @@ chrome.storage.sync.get({
 									enableColorBlindMode: false,
 									enableCVPercentages: true
 								}, function(colorItems) {
+									if (chrome.runtime.lastError) {
+										console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
+										return;
+									}
 									if (colorItems.enableColorBlindMode) {
 										hue = hue * -1 + 240;
 									}
@@ -654,6 +596,10 @@ chrome.storage.sync.get({
 	chrome.storage.sync.get({
 		colorDisplayMode: 'sidebar'
 	}, function(items) {
+		if (chrome.runtime.lastError) {
+			console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
+			return;
+		}
 		const link = document.createElement('link');
 		link.type = 'text/css';
 		link.rel = 'stylesheet';

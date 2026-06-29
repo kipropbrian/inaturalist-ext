@@ -160,11 +160,16 @@ document.addEventListener('selectTaxonRequest', async (event) => {
 		}
 
 		let input = findIdentificationInput(isIdentifyPage);
-		if (!input && isIdentifyPage) {
-			const addIdButton = findVisibleAddIdButton() || await waitForAddIdButton(1500);
-			if (!addIdButton) throw new Error('Could not find the active Add ID button');
-			addIdButton.click();
-			input = await waitForIdentificationInput(4000);
+		if (!input) {
+			if (isIdentifyPage) {
+				await activateIdentifyInfoTab();
+				const addIdButton = findVisibleAddIdButton() || await waitForAddIdButton(1500);
+				if (!addIdButton) throw new Error('Could not find the active Add ID button');
+				addIdButton.click();
+				input = await waitForIdentificationInput(true, 4000);
+			} else {
+				input = await waitForIdentificationInput(false, 3000);
+			}
 		}
 
 		if (!input) throw new Error('Could not find the active identification input');
@@ -178,6 +183,22 @@ document.addEventListener('selectTaxonRequest', async (event) => {
 		}));
 	}
 });
+
+async function activateIdentifyInfoTab() {
+	const modal = findVisibleElement('.ObservationModal');
+	if (!modal) throw new Error('Could not find the active observation dialog');
+	if (modal.querySelector('.info-tab.active')) return;
+
+	// Info is the first tab in iNaturalist's ObservationModal. Clicking its
+	// native control keeps the React tab state synchronized.
+	const infoTabButton = modal.querySelector('.inat-tabs > li:first-child > button');
+	if (!infoTabButton || !isVisibleElement(infoTabButton)) {
+		throw new Error('Could not find the Info tab');
+	}
+
+	infoTabButton.click();
+	await waitForVisibleElement('.ObservationModal .info-tab.active', 3000, 'Info tab did not become active');
+}
 
 function findIdentificationInput(isIdentifyPage) {
 	const selector = isIdentifyPage
@@ -194,13 +215,13 @@ function findVisibleAddIdButton() {
 		)) || null;
 }
 
-function waitForIdentificationInput(timeoutMs) {
+function waitForIdentificationInput(isIdentifyPage, timeoutMs) {
 	return new Promise((resolve, reject) => {
-		const existing = findIdentificationInput(true);
+		const existing = findIdentificationInput(isIdentifyPage);
 		if (existing) return resolve(existing);
 
 		const observer = new MutationObserver(() => {
-			const input = findIdentificationInput(true);
+			const input = findIdentificationInput(isIdentifyPage);
 			if (!input) return;
 			observer.disconnect();
 			clearTimeout(timeout);
@@ -208,7 +229,7 @@ function waitForIdentificationInput(timeoutMs) {
 		});
 		const timeout = setTimeout(() => {
 			observer.disconnect();
-			reject(new Error('Could not find autocomplete input after opening Add ID'));
+			reject(new Error('Could not find autocomplete input after opening identification form'));
 		}, timeoutMs);
 		observer.observe(document.body, { childList: true, subtree: true, attributes: true });
 	});
@@ -229,6 +250,26 @@ function waitForAddIdButton(timeoutMs) {
 		const timeout = setTimeout(() => {
 			observer.disconnect();
 			resolve(null);
+		}, timeoutMs);
+		observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+	});
+}
+
+function waitForVisibleElement(selector, timeoutMs, errorMessage) {
+	return new Promise((resolve, reject) => {
+		const existing = findVisibleElement(selector);
+		if (existing) return resolve(existing);
+
+		const observer = new MutationObserver(() => {
+			const element = findVisibleElement(selector);
+			if (!element) return;
+			observer.disconnect();
+			clearTimeout(timeout);
+			resolve(element);
+		});
+		const timeout = setTimeout(() => {
+			observer.disconnect();
+			reject(new Error(errorMessage));
 		}, timeoutMs);
 		observer.observe(document.body, { childList: true, subtree: true, attributes: true });
 	});

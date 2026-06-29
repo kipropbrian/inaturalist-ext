@@ -2,7 +2,11 @@
 	'use strict';
 
 	chrome.storage.sync.get({ enableIdentificationExplorer: true }, function (settings) {
-		if (!settings.enableIdentificationExplorer) return;
+		if (chrome.runtime.lastError) {
+			console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
+			return;
+		}
+		if (!settings || !settings.enableIdentificationExplorer) return;
 
 		const match = window.location.pathname.match(/^\/identifications\/([^/?#]+)/);
 		if (!match) return;

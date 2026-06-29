@@ -3,7 +3,11 @@
 
 	// Load settings from storage
 	chrome.storage.sync.get({ enableSimilarSpeciesTab: true }, function (settings) {
-		if (!settings.enableSimilarSpeciesTab) return;
+		if (chrome.runtime.lastError) {
+			console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
+			return;
+		}
+		if (!settings || !settings.enableSimilarSpeciesTab) return;
 
 		let currentTaxon = null;
 		let currentPlaceId = null;
