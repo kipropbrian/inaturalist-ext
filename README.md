@@ -8,6 +8,11 @@ settings in `chrome.storage.sync`. It does not require a build step.
 
 ## Features
 
+- **AI-Powered Smart Auto-Crop:** Run on-device subject detection using an integrated **EfficientDet-Lite0** model via **LiteRT.js** (WebAssembly) to automatically size and center the crop box around birds, plants, insects, or other organisms. Includes a sparkles (**✨**) button to toggle or re-apply.
+- **Image Gallery / Photos Tab:** View observation photos in a structured, interactive image gallery tab.
+- **Quick Add Plant Button:** Add flora identifications quickly with a "Quick Plant" action button next to the taxon input field.
+- **Similar Species Selection Buttons:** Add selection and identify buttons directly onto similar species list items/cards.
+- **Identify Page Paging Cooldown:** Prevent double loading and infinite scroll bugs with a visual loading overlay and pagination cooldown.
 - Score observation images with iNaturalist computer vision.
 - Crop part of an image before requesting computer-vision suggestions.
 - Show linked taxonomic hierarchies for computer-vision suggestions and
@@ -49,6 +54,7 @@ the same page.
 ```text
 iNaturalist Enhancement Suite/
 ├── manifest.json
+├── background.js
 ├── options.html
 ├── options.js
 ├── domContext.js
@@ -59,14 +65,23 @@ iNaturalist Enhancement Suite/
 ├── content-upload.js
 ├── content-taxa.js
 ├── identifications.css
-└── similar-species.css
+├── similar-species.css
+└── lib/
+    └── litert/
+        ├── litert.js
+        ├── models/
+        │   └── efficientdet_lite0.tflite
+        └── wasm/
+            ├── litert_wasm_internal.js
+            └── litert_wasm_internal.wasm (etc.)
 ```
 
+- `background.js` handles cross-origin image requests and executes local on-device machine learning inference (LiteRT.js object detection) inside the extension service worker context.
 - `domContext.js` runs in the page's main JavaScript world. It bridges
   operations that need iNaturalist's page context to isolated content scripts
   through custom DOM events.
 - `content-score-crop.js` provides Score Image, Crop for CV, suggestion
-  rendering, selectable hierarchy links, and linked taxonomic hierarchies.
+  rendering, selectable hierarchy links, linked taxonomic hierarchies, and Smart Auto-Crop.
 - `content-identify-similar.js` adds the Similar Species section to the
   Identify modal Info panel and keeps it below the ID activity.
 - `content-identifications.js` adds API-backed filtering, compact paging, and
@@ -111,6 +126,7 @@ node --check "iNaturalist Enhancement Suite/content-identify-similar.js"
 node --check "iNaturalist Enhancement Suite/content-identifications.js"
 node --check "iNaturalist Enhancement Suite/content-observation.js"
 node --check "iNaturalist Enhancement Suite/domContext.js"
+node --check "iNaturalist Enhancement Suite/background.js"
 node --check "iNaturalist Enhancement Suite/options.js"
 jq empty "iNaturalist Enhancement Suite/manifest.json"
 git diff --check
