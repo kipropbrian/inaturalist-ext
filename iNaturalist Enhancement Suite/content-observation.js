@@ -3,6 +3,7 @@ chrome.storage.sync.get({
 	enableCVPercentages: true,
 	enableCopyGeo: true,
 	enableIdentifierStats: true,
+	enableQuickPlant: true,
 	enableLogging: false
 }, function(items) {
 	if (chrome.runtime.lastError) {
@@ -27,8 +28,15 @@ chrome.storage.sync.get({
 				const taxonParts = taxonAnchor.href.split('/')
 				const taxonId = taxonParts[taxonParts.length - 1];
 				const url = `https://api.inaturalist.org/v1/identifications/categories?user_login=${user}&taxon_id=${taxonId}`;
-				const response = await fetch(url);
-				const data = await response.json();
+
+				const key = `inat-userstats-${user}-${taxonId}`;
+				let data = await window.iNatCache.read(key);
+				if (!data) {
+					const response = await fetch(url);
+					data = await response.json();
+					await window.iNatCache.write(key, data);
+				}
+
 				if (data && data.results && data.results.length) {
 					const leading = data.results.find(c => c.category === 'leading');
 					const improving = data.results.find(c => c.category === 'improving');
@@ -51,6 +59,8 @@ chrome.storage.sync.get({
 
 
 	let location;
+	let currentTaxon = null;
+	let currentSpeciesGuess = null;
 	let computerVisionResults = new Map();
 	const hierarchyTaxaCache = new Map();
 
@@ -105,6 +115,37 @@ chrome.storage.sync.get({
 		let lastGridSignature = null;
 		let fallbackTimer = null;
 		let debounceTimer = null;
+		let cooldownActive = false;
+		let cooldownSecondsLeft = 0;
+		let cooldownTimer = null;
+
+		const startCooldown = pagination => {
+			clearTimeout(cooldownTimer);
+			cooldownActive = true;
+			cooldownSecondsLeft = 5;
+
+			const tick = () => {
+				if (cooldownSecondsLeft > 0) {
+					if (observedPagination) {
+						showAutoPagingStatus(observedPagination, `Auto-paging cooldown: ${cooldownSecondsLeft}s`);
+					}
+					cooldownSecondsLeft--;
+					cooldownTimer = setTimeout(tick, 1000);
+				} else {
+					cooldownActive = false;
+					if (observedPagination) {
+						showAutoPagingStatus(observedPagination, 'Scroll beyond the bottom to load the next page');
+					}
+				}
+			};
+			tick();
+		};
+
+		const clearCooldown = () => {
+			clearTimeout(cooldownTimer);
+			cooldownActive = false;
+			cooldownSecondsLeft = 0;
+		};
 
 		const maybeLoadNextPage = event => {
 			if (loadingPage) {
@@ -119,12 +160,14 @@ chrome.storage.sync.get({
 						document.documentElement.style.overflowY = '';
 						hideAutoPagingOverlay();
 						if (observedPagination) {
-							showAutoPagingStatus(observedPagination, 'Scroll beyond the bottom to load the next page');
+							showAutoPagingStatus(observedPagination, cooldownActive ? `Auto-paging cooldown: ${cooldownSecondsLeft + 1}s` : 'Scroll beyond the bottom to load the next page');
 						}
 					}, 150);
 				}
 				return true;
 			}
+
+			if (cooldownActive) return false;
 
 			const deltaY = getWheelDeltaPixels(event);
 			if (deltaY <= 0) return false;
@@ -163,6 +206,7 @@ chrome.storage.sync.get({
 				lastTriggeredPage = null;
 				document.documentElement.style.overflowY = '';
 				hideAutoPagingOverlay();
+				clearCooldown();
 				if (observedPagination) {
 					showAutoPagingStatus(observedPagination, 'Scroll beyond the bottom to load the next page');
 				}
@@ -181,7 +225,7 @@ chrome.storage.sync.get({
 
 			if (pagination !== observedPagination) {
 				observedPagination = pagination;
-				showAutoPagingStatus(pagination, 'Scroll beyond the bottom to load the next page');
+				showAutoPagingStatus(pagination, cooldownActive ? `Auto-paging cooldown: ${cooldownSecondsLeft + 1}s` : 'Scroll beyond the bottom to load the next page');
 				lastActivePage = getCurrentIdentifyPage(pagination);
 			}
 
@@ -203,7 +247,7 @@ chrome.storage.sync.get({
 							loadingPage = false;
 							lastTriggeredPage = null;
 							document.documentElement.style.overflowY = '';
-							showAutoPagingStatus(pagination, 'Scroll beyond the bottom to load the next page');
+							startCooldown(pagination);
 						}, 150);
 						lastActivePage = currentPage;
 					}
@@ -211,6 +255,9 @@ chrome.storage.sync.get({
 					// Manual page change detected (user clicked Next / Prev)
 					window.scrollTo(0, 0);
 					
+					// Clear cooldown since user manually navigated
+					clearCooldown();
+
 					// Lock auto-paging briefly to prevent accidental trigger from click momentum
 					loadingPage = true;
 					pageLoaded = true;
@@ -318,6 +365,13 @@ chrome.storage.sync.get({
 	document.addEventListener('observationFetch', event => {
 		log('observationFetch handler', event.detail);
 
+		const obs = event.detail?.observation;
+		currentTaxon = obs ? (obs.taxon || null) : null;
+		currentSpeciesGuess = obs ? (obs.species_guess || null) : null;
+		if (items.enableQuickPlant) {
+			updateQuickPlantVisibility();
+		}
+
 		if (items.enableCopyGeo) {
 			const detail = event.detail;
 			if (detail) {
@@ -372,7 +426,7 @@ chrome.storage.sync.get({
 	});
 
 	// colorization
-	document.arrive('div.TaxonAutocomplete > ul', ul => {
+	document.arrive('.TaxonAutocomplete > ul', ul => {
 		// triggered when the subtree changes, i.e. the CV rows are created, or classes are added/removed
 		function observeCallback(mutations) {
 			for (const mutation of mutations) {
@@ -568,21 +622,65 @@ chrome.storage.sync.get({
 	async function fetchTaxon(taxonId) {
 		const cached = hierarchyTaxaCache.get(String(taxonId));
 		if (cached?.ancestor_ids) return cached;
+
+		// Check L2 cache
+		const persistentKey = `inat-taxon-${taxonId}`;
+		const persistentResult = await window.iNatCache.read(persistentKey);
+		if (persistentResult?.ancestor_ids) {
+			hierarchyTaxaCache.set(String(taxonId), persistentResult);
+			return persistentResult;
+		}
+
 		const taxa = await fetchTaxa([taxonId]);
 		return taxa[0] || {};
 	}
 
 	async function fetchTaxa(ids) {
 		const results = [];
-		for (let index = 0; index < ids.length; index += 30) {
-			const batch = ids.slice(index, index + 30);
+		const missingFromL1 = [];
+
+		// Step 1: Check L1 in-memory cache
+		for (const id of ids) {
+			const idStr = String(id);
+			if (hierarchyTaxaCache.has(idStr)) {
+				results.push(hierarchyTaxaCache.get(idStr));
+			} else {
+				missingFromL1.push(id);
+			}
+		}
+
+		if (missingFromL1.length === 0) {
+			return results;
+		}
+
+		// Step 2: Check L2 persistent cache
+		const missingFromL2 = [];
+		for (const id of missingFromL1) {
+			const key = `inat-taxon-${id}`;
+			const cached = await window.iNatCache.read(key);
+			if (cached) {
+				hierarchyTaxaCache.set(String(id), cached);
+				results.push(cached);
+			} else {
+				missingFromL2.push(id);
+			}
+		}
+
+		if (missingFromL2.length === 0) {
+			return results;
+		}
+
+		// Step 3: Fetch remaining from API in batches of 30
+		for (let index = 0; index < missingFromL2.length; index += 30) {
+			const batch = missingFromL2.slice(index, index + 30);
 			const response = await fetch(`https://api.inaturalist.org/v1/taxa/${batch.join(',')}`);
 			if (!response.ok) throw new Error(`Taxa API returned HTTP ${response.status}`);
 			const data = await response.json();
-			(data.results || []).forEach(taxon => {
+			for (const taxon of data.results || []) {
 				hierarchyTaxaCache.set(String(taxon.id), taxon);
 				results.push(taxon);
-			});
+				await window.iNatCache.write(`inat-taxon-${taxon.id}`, taxon);
+			}
 		}
 		return results;
 	}
@@ -592,6 +690,182 @@ chrome.storage.sync.get({
 		element.textContent = String(value == null ? '' : value);
 		return element.innerHTML;
 	}
+
+	function updateQuickPlantVisibility() {
+		const containers = document.querySelectorAll('.inat-quick-add-container');
+		for (const container of containers) {
+			if (currentTaxon === null) {
+				container.style.setProperty('display', 'grid', 'important');
+			} else {
+				container.style.setProperty('display', 'none', 'important');
+			}
+
+			// Update the placeholder text and visibility
+			const labelEl = container.querySelector('.inat-quick-add-placeholder-label');
+			const containerEl = container.querySelector('.inat-quick-add-placeholder-wrapper-container');
+			const valEl = container.querySelector('.inat-quick-add-placeholder-value');
+			
+			if (labelEl && containerEl && valEl) {
+				if (currentSpeciesGuess) {
+					labelEl.style.setProperty('display', 'inline-block', 'important');
+					containerEl.style.setProperty('display', 'flex', 'important');
+					valEl.textContent = currentSpeciesGuess;
+				} else {
+					labelEl.style.setProperty('display', 'none', 'important');
+					containerEl.style.setProperty('display', 'none', 'important');
+				}
+			}
+		}
+	}
+
+	// Quick-add taxon definitions: photoUrl, label, taxon id, colour accent
+	const QUICK_ADD_TAXA = [
+		{
+			photoUrl: 'https://static.inaturalist.org/photos/221143410/square.jpeg',
+			label: 'Plant',
+			taxon: { id: 47126, name: 'Plantae', preferred_common_name: 'Plants', rank: 'kingdom', iconic_taxon_name: 'Plantae' },
+			accent: { bg: '#f0f7e6', border: '#a4d257', hoverBg: '#e2f0cc', hoverBorder: '#7db53a', text: '#3d6b00' }
+		},
+		{
+			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/76692662/square.jpg',
+			label: 'Grasses',
+			taxon: { id: 47434, name: 'Poaceae', preferred_common_name: 'Grasses', rank: 'family', iconic_taxon_name: 'Plantae' },
+			accent: { bg: '#edf4e3', border: '#92c347', hoverBg: '#e0ecce', hoverBorder: '#719f2d', text: '#365111' }
+		},
+		{
+			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/36127/square.jpg',
+			label: 'Lepidoptera',
+			taxon: { id: 47157, name: 'Lepidoptera', preferred_common_name: 'Butterflies and Moths', rank: 'order', iconic_taxon_name: 'Insecta' },
+			accent: { bg: '#f5f0fc', border: '#c9a8f5', hoverBg: '#ece0fb', hoverBorder: '#a97ee0', text: '#5a2d91' }
+		}
+	];
+
+	function makeQuickAddBtn(def, input) {
+		const btn = document.createElement('button');
+		btn.type = 'button';
+		btn.className = 'inat-quick-add-btn';
+		btn.dataset.inatQuickTaxon = def.taxon.id;
+		btn.title = `Identify as ${def.taxon.preferred_common_name || def.taxon.name}`;
+		btn.style.setProperty('--qa-bg',           def.accent.bg);
+		btn.style.setProperty('--qa-border',       def.accent.border);
+		btn.style.setProperty('--qa-hover-bg',     def.accent.hoverBg);
+		btn.style.setProperty('--qa-hover-border', def.accent.hoverBorder);
+		btn.style.setProperty('--qa-text',         def.accent.text);
+		btn.innerHTML = `<span class="inat-quick-add-thumb-wrap" aria-hidden="true"><img src="${def.photoUrl}" class="inat-quick-add-thumb"></span><span class="inat-quick-add-text">${def.label}</span>`;
+
+		btn.addEventListener('click', function(e) {
+			e.preventDefault();
+			e.stopPropagation();
+			input.setAttribute('data-inat-target-input', 'true');
+			const requestId = Math.random().toString(36).substring(2);
+			const isIdentify = window.location.pathname.includes('/observations/identify');
+			document.dispatchEvent(new CustomEvent('selectTaxonRequest', {
+				detail: { taxon: def.taxon, requestId, isIdentifyPage: isIdentify }
+			}));
+		});
+
+		return btn;
+	}
+
+	function setupQuickPlant() {
+		// Only enhance identification forms. The Identify page also has a taxon
+		// autocomplete in its filter bar, but that control is not an ID form.
+		document.arrive('.IdentificationForm .TaxonAutocomplete input[name="taxon_name"], .IdentificationForm .TaxonAutocomplete input[type="search"]', { existing: true }, function() {
+			const input = this;
+			const autocomplete = input.closest('.TaxonAutocomplete');
+			if (!autocomplete || autocomplete.dataset.inatQuickPlant === 'true') return;
+			autocomplete.dataset.inatQuickPlant = 'true';
+
+			const wrapper = document.createElement('div');
+			wrapper.className = 'inat-quick-add-container';
+
+			// Row 1 Label
+			const label = document.createElement('span');
+			label.className = 'inat-quick-add-label';
+			label.textContent = 'Quick ID';
+
+			// Row 1 Content
+			const btnRow = document.createElement('div');
+			btnRow.className = 'inat-quick-add-btn-row';
+
+			for (const def of QUICK_ADD_TAXA) {
+				btnRow.appendChild(makeQuickAddBtn(def, input));
+			}
+
+			wrapper.appendChild(label);
+			wrapper.appendChild(btnRow);
+
+			// Row 2 Label
+			const placeholderLabel = document.createElement('span');
+			placeholderLabel.className = 'inat-quick-add-placeholder-label';
+			placeholderLabel.textContent = 'Placeholder';
+			
+			// Row 2 Content wrapper container (for grid cell border)
+			const placeholderWrapperContainer = document.createElement('div');
+			placeholderWrapperContainer.className = 'inat-quick-add-placeholder-wrapper-container';
+
+			// The copyable pill itself
+			const placeholderWrapper = document.createElement('div');
+			placeholderWrapper.className = 'inat-quick-add-placeholder-wrapper';
+			placeholderWrapper.title = 'Click to copy placeholder to clipboard';
+			
+			const placeholderVal = document.createElement('span');
+			placeholderVal.className = 'inat-quick-add-placeholder-value';
+			
+			const copyIcon = document.createElement('span');
+			copyIcon.className = 'inat-quick-add-placeholder-copy';
+			copyIcon.innerHTML = '📋';
+
+			placeholderWrapper.appendChild(placeholderVal);
+			placeholderWrapper.appendChild(copyIcon);
+			placeholderWrapperContainer.appendChild(placeholderWrapper);
+			
+			wrapper.appendChild(placeholderLabel);
+			wrapper.appendChild(placeholderWrapperContainer);
+
+			// Copy logic
+			const copyAction = async (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				if (placeholderVal.textContent && placeholderVal.textContent !== 'Copied!') {
+					const originalText = placeholderVal.textContent;
+					const textToCopy = `Placeholder: ${originalText}`;
+					await navigator.clipboard.writeText(textToCopy);
+					
+					// Visual feedback
+					placeholderVal.textContent = 'Copied!';
+					placeholderVal.classList.add('copied');
+					copyIcon.innerHTML = '✅';
+					setTimeout(() => {
+						placeholderVal.textContent = originalText;
+						placeholderVal.classList.remove('copied');
+						copyIcon.innerHTML = '📋';
+					}, 1000);
+				}
+			};
+			placeholderWrapper.addEventListener('click', copyAction);
+
+			// Set initial visibility of wrapper
+			wrapper.style.setProperty('display', currentTaxon === null ? 'grid' : 'none', 'important');
+
+			// Set initial visibility and content of placeholder section
+			if (currentSpeciesGuess) {
+				placeholderLabel.style.setProperty('display', 'inline-block', 'important');
+				placeholderWrapperContainer.style.setProperty('display', 'flex', 'important');
+				placeholderVal.textContent = currentSpeciesGuess;
+			} else {
+				placeholderLabel.style.setProperty('display', 'none', 'important');
+				placeholderWrapperContainer.style.setProperty('display', 'none', 'important');
+			}
+
+			autocomplete.insertAdjacentElement('afterend', wrapper);
+		});
+	}
+
+	if (items.enableQuickPlant) {
+		setupQuickPlant();
+	}
+
 
 	chrome.storage.sync.get({
 		colorDisplayMode: 'sidebar'

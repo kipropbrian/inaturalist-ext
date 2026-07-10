@@ -127,6 +127,7 @@
 									${commonName ? `<a href="${taxonUrl}" class="inat-similar-common" target="_blank" rel="noopener" title="${escapeHtml(commonName)}">${escapeHtml(commonName)}</a>` : ''}
 									<a href="${taxonUrl}" class="inat-similar-scientific" target="_blank" rel="noopener" title="${escapeHtml(scientificName)}">${escapeHtml(scientificName)}</a>
 								</div>
+								<button class="inat-similar-select-btn" data-index="${index}">Select</button>
 							</div>
 						</li>
 					`;
@@ -141,6 +142,19 @@
 					</div>
 					${gridHTML}
 				`;
+
+				panel.querySelectorAll('.inat-similar-select-btn').forEach(btn => {
+					btn.addEventListener('click', event => {
+						event.preventDefault();
+						event.stopPropagation();
+						const index = parseInt(btn.getAttribute('data-index'), 10);
+						const item = results[index];
+						if (item && item.taxon) {
+							applyTaxonToForm(item.taxon);
+						}
+					});
+				});
+
 
 			} catch (error) {
 				if (!isCurrentPanel(panel, sequence)) return;
@@ -166,12 +180,19 @@
 		// ── Helpers ──────────────────────────────────────────────────────────
 
 		async function fetchSimilarSpecies(taxonId) {
+			const key = `inat-similar-${taxonId}`;
+			const cached = await window.iNatCache.read(key);
+			if (cached) {
+				return cached;
+			}
 			const url = `https://api.inaturalist.org/v1/identifications/similar_species?taxon_id=${taxonId}`;
 			const response = await fetch(url);
 			if (!response.ok) {
 				throw new Error(`API returned HTTP ${response.status}`);
 			}
-			return await response.json();
+			const data = await response.json();
+			await window.iNatCache.write(key, data);
+			return data;
 		}
 
 		function isSpeciesLevelTaxon(taxon) {
@@ -203,15 +224,50 @@
 
 		async function fetchTaxa(ids) {
 			const results = [];
-			for (let index = 0; index < ids.length; index += 30) {
-				const batch = ids.slice(index, index + 30);
+			const missingFromL1 = [];
+
+			// Step 1: Check L1 in-memory cache
+			for (const id of ids) {
+				const idStr = String(id);
+				if (taxonCache.has(idStr)) {
+					results.push(taxonCache.get(idStr));
+				} else {
+					missingFromL1.push(id);
+				}
+			}
+
+			if (missingFromL1.length === 0) {
+				return results;
+			}
+
+			// Step 2: Check L2 persistent cache
+			const missingFromL2 = [];
+			for (const id of missingFromL1) {
+				const key = `inat-taxon-${id}`;
+				const cached = await window.iNatCache.read(key);
+				if (cached) {
+					taxonCache.set(String(id), cached);
+					results.push(cached);
+				} else {
+					missingFromL2.push(id);
+				}
+			}
+
+			if (missingFromL2.length === 0) {
+				return results;
+			}
+
+			// Step 3: Fetch remaining from API in batches of 30
+			for (let index = 0; index < missingFromL2.length; index += 30) {
+				const batch = missingFromL2.slice(index, index + 30);
 				const response = await fetch(`https://api.inaturalist.org/v1/taxa/${batch.join(',')}`);
 				if (!response.ok) throw new Error(`Taxa API returned HTTP ${response.status}`);
 				const data = await response.json();
-				(data.results || []).forEach(taxon => {
+				for (const taxon of data.results || []) {
 					taxonCache.set(String(taxon.id), taxon);
 					results.push(taxon);
-				});
+					await window.iNatCache.write(`inat-taxon-${taxon.id}`, taxon);
+				}
 			}
 			return results;
 		}

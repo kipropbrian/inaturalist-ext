@@ -60,15 +60,18 @@
         "https://*.www.naturalista.uy/observations/*"
       ],
       "css": [
-        "similar-species.css"
+        "similar-species.css",
+        "photos-tab.css"
       ],
       "js": [
         "logging.js",
+        "cache.js",
         "arrive-2.4.1.min.js",
         "cropper.min.js",
         "content-observation.js",
         "content-score-crop.js",
-        "content-identify-similar.js"
+        "content-identify-similar.js",
+        "content-photos-tab.js"
       ],
       "run_at": "document_start"
     },
@@ -111,6 +114,7 @@
       ],
       "js": [
         "logging.js",
+        "cache.js",
         "arrive-2.4.1.min.js",
         "content-taxa.js"
       ],

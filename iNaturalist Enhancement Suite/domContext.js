@@ -149,6 +149,45 @@ document.addEventListener('scoreImageRequest', async (event) => {
 	}
 });
 
+let currentInterceptedSpeciesGuess = null;
+
+// Taxon suggestions arrive from several extension features with different API
+// field sets. Normalize them once here before handing them to iNaturalist.
+const autocompleteTaxonPromises = new Map();
+
+async function hydrateTaxonForAutocomplete(taxon) {
+	if (!taxon?.id) throw new Error('Taxon selection is missing an ID');
+
+	const cacheKey = String(taxon.id);
+	const cached = autocompleteTaxonPromises.get(cacheKey);
+	if (cached) return cached;
+
+	const promise = (async () => {
+		// A complete photo object is enough for iNatModels.Taxon#photoTag. Score
+		// and Similar Species usually already provide this, avoiding a request.
+		if (taxon.default_photo?.square_url) return taxon;
+
+		const response = await fetch(`https://api.inaturalist.org/v1/taxa/${encodeURIComponent(taxon.id)}`);
+		if (!response.ok) {
+			throw new Error(`Could not load taxon ${taxon.id} (HTTP ${response.status})`);
+		}
+		const data = await response.json();
+		const fullTaxon = data?.results?.[0];
+		if (!fullTaxon?.id) throw new Error(`Taxon ${taxon.id} was not found`);
+
+		// Retain any feature-specific fields while allowing canonical API fields
+		// such as default_photo, names, rank, and ancestors to win.
+		return { ...taxon, ...fullTaxon };
+	})().catch(error => {
+		autocompleteTaxonPromises.delete(cacheKey);
+		console.warn('[iNat Enhancement] Using incomplete taxon after hydration failed:', error);
+		return taxon;
+	});
+
+	autocompleteTaxonPromises.set(cacheKey, promise);
+	return promise;
+}
+
 // Listen for taxon selection requests from content script
 document.addEventListener('selectTaxonRequest', async (event) => {
 	const { taxon, requestId, isIdentifyPage } = event.detail;
@@ -159,22 +198,28 @@ document.addEventListener('selectTaxonRequest', async (event) => {
 			focused.blur();
 		}
 
-		let input = findIdentificationInput(isIdentifyPage);
-		if (!input) {
-			if (isIdentifyPage) {
-				await activateIdentifyInfoTab();
-				const addIdButton = findVisibleAddIdButton() || await waitForAddIdButton(1500);
-				if (!addIdButton) throw new Error('Could not find the active Add ID button');
-				addIdButton.click();
-				input = await waitForIdentificationInput(true, 4000);
-			} else {
-				input = await waitForIdentificationInput(false, 3000);
+		let input = document.querySelector('[data-inat-target-input="true"]');
+		if (input) {
+			input.removeAttribute('data-inat-target-input');
+		} else {
+			input = findIdentificationInput(isIdentifyPage);
+			if (!input) {
+				if (isIdentifyPage) {
+					await activateIdentifyInfoTab();
+					const addIdButton = findVisibleAddIdButton() || await waitForAddIdButton(1500);
+					if (!addIdButton) throw new Error('Could not find the active Add ID button');
+					addIdButton.click();
+					input = await waitForIdentificationInput(true, 4000);
+				} else {
+					input = await waitForIdentificationInput(false, 3000);
+				}
 			}
 		}
 
 		if (!input) throw new Error('Could not find the active identification input');
 		const container = input.closest('.TaxonAutocomplete') || input.parentElement;
-		performAutocomplete(input, container, taxon, requestId);
+		const hydratedTaxon = await hydrateTaxonForAutocomplete(taxon);
+		performAutocomplete(input, container, hydratedTaxon, requestId);
 
 	} catch (error) {
 		console.error('[iNat Enhancement] selectTaxon error:', error);
@@ -292,22 +337,22 @@ function performAutocomplete(input, container, taxon, requestId) {
 		if (typeof window.$ !== 'function') {
 			throw new Error('iNaturalist autocomplete is not ready yet');
 		}
-		const $input = $(input);
-
-		// iNaturalist's TaxonAutocomplete listens for this event and stores the
-		// complete object in input.data("autocomplete-item"), which is what the
-		// IdentificationForm reads on submit.
-		if (!taxon.title) {
-			taxon.title = taxon.preferred_common_name
-				? `${taxon.preferred_common_name} · ${taxon.name}`
-				: taxon.name;
+		if (typeof window.iNatModels?.Taxon !== 'function') {
+			throw new Error('iNaturalist taxon model is not ready yet');
 		}
+		const $input = $(input);
+		const selectedTaxon = taxon instanceof window.iNatModels.Taxon
+			? taxon
+			: new window.iNatModels.Taxon(taxon);
 
-		$input.trigger('assignSelection', [taxon]);
+		// Native autocomplete converts API results to iNatModels.Taxon before
+		// assignment. Besides storing the selection, that model supplies
+		// photoTag(), which renders the selected taxon's thumbnail.
+		$input.trigger('assignSelection', [selectedTaxon]);
 
 		const selected = $input.data('autocomplete-item');
-		if (!selected || Number(selected.id) !== Number(taxon.id)) {
-			throw new Error(`Taxon selection could not be verified for ID ${taxon.id}`);
+		if (!selected || Number(selected.id) !== Number(selectedTaxon.id)) {
+			throw new Error(`Taxon selection could not be verified for ID ${selectedTaxon.id}`);
 		}
 
 		closeAutocompleteMenu($input, container);
@@ -413,10 +458,12 @@ window.fetch = async (url, options) => {
 			if (observationMatch) {
 				const data = await readJsonResponse(response);
 				if (data && data.results && data.results.length && data.results[0]) {
+					const obs = data.results[0];
+					currentInterceptedSpeciesGuess = (!obs.taxon) ? (obs.species_guess || null) : null;
 					const payload = {
 						detail: {
-							location: data.results[0].location,
-							observation: data.results[0]
+							location: obs.location,
+							observation: obs
 						}
 					};
 
@@ -442,3 +489,49 @@ async function readJsonResponse(response) {
 
 	return JSON.parse(text);
 }
+
+function setReactTextareaValue(textarea, value) {
+	// React controls the textarea via a synthetic `value` prop that overwrites
+	// whatever we write to textarea.value. We must go through React's own
+	// event pipeline to update its internal state.
+	//
+	// Step 1: Use the native HTMLTextAreaElement value setter (bypasses React's
+	//         override) to set the raw DOM value.
+	const nativeSetter = Object.getOwnPropertyDescriptor(
+		window.HTMLTextAreaElement.prototype, 'value'
+	).set;
+	nativeSetter.call(textarea, value);
+
+	// Step 2: Fire a React-compatible 'change' event.
+	//         This triggers TextEditor.textareaOnChange → setState({ content })
+	//         which keeps React's internal state in sync.
+	textarea.dispatchEvent(new Event('change', { bubbles: true }));
+
+	// Step 3: Fire a blur event after a short delay.
+	//         IdentificationForm's onBlur handler calls
+	//         updateEditorContent("obsIdentifyIdComment", e.target.value)
+	//         which persists the value into the Redux store that the form
+	//         reads when the user clicks Save.
+	setTimeout(() => {
+		textarea.dispatchEvent(new Event('blur', { bubbles: true }));
+	}, 80);
+}
+
+function setupAssignSelectionListener() {
+	if (typeof window.$ === 'function') {
+		$(document).on('assignSelection', 'input[name="taxon_name"], input[type="search"]', function(e, selectedTaxon) {
+			if (!selectedTaxon) return;
+			const input = this;
+			const form = input.closest('form');
+			if (form && currentInterceptedSpeciesGuess) {
+				const textarea = form.querySelector('textarea');
+				if (textarea && !textarea.value.trim()) {
+					setReactTextareaValue(textarea, `Placeholder: ${currentInterceptedSpeciesGuess}`);
+				}
+			}
+		});
+	} else {
+		setTimeout(setupAssignSelectionListener, 100);
+	}
+}
+setupAssignSelectionListener();

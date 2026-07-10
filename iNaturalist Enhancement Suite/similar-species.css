@@ -264,8 +264,214 @@
 	text-decoration: underline;
 }
 
+.inat-similar-select-btn {
+	background: #74ac00;
+	color: #ffffff !important;
+	border: none;
+	border-radius: 6px;
+	padding: 5px 12px;
+	font-size: 11px;
+	font-weight: 600;
+	cursor: pointer;
+	white-space: nowrap;
+	margin-left: 8px;
+	transition: background-color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+	box-shadow: 0 1px 3px rgba(116, 172, 0, 0.2);
+}
+
+.inat-similar-select-btn:hover {
+	background: #5e8b00;
+	box-shadow: 0 2px 6px rgba(116, 172, 0, 0.3);
+}
+
+.inat-similar-select-btn:active {
+	transform: scale(0.95);
+	background: #4e7300;
+}
+
 @media (max-width: 520px) {
 	.inat-similar-grid {
 		grid-template-columns: 1fr;
 	}
 }
+
+/* ── Quick-add buttons (below IdentificationForm search) ─────────────────── */
+.inat-quick-add-container {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: 10px 14px;
+	align-items: center;
+	margin: 9px 0 6px;
+	padding: 10px 12px;
+	background: #f9fafb;
+	border: 1px solid #e8eaed;
+	border-radius: 10px;
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.inat-quick-add-label {
+	color: #9aa3af;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	white-space: nowrap;
+	line-height: 1;
+	justify-self: start;
+	align-self: center;
+}
+
+.inat-quick-add-btn-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 5px;
+	align-self: center;
+}
+
+.inat-quick-add-btn {
+	/* Per-button theming via CSS custom properties set inline */
+	background: var(--qa-bg, #f3f8e9);
+	color: var(--qa-text, #4f7300) !important;
+	border: 1.5px solid var(--qa-border, #c8daa5);
+	border-radius: 4px;
+	padding: 0 10px 0 0;
+	font-size: 12px;
+	font-weight: 600;
+	height: 31px;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	white-space: nowrap;
+	overflow: hidden;
+	transition: background 0.14s ease, border-color 0.14s ease,
+	            box-shadow 0.14s ease, transform 0.08s ease;
+	box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+	user-select: none;
+}
+
+.inat-quick-add-btn:hover {
+	background: var(--qa-hover-bg, #e7f1d3);
+	border-color: var(--qa-hover-border, #9fbd68);
+	box-shadow: 0 2px 6px rgba(0,0,0,0.10);
+	text-decoration: none;
+}
+
+.inat-quick-add-btn:active {
+	transform: scale(0.96);
+	box-shadow: inset 0 1px 2px rgba(0,0,0,0.10);
+}
+
+.inat-quick-add-btn:disabled {
+	cursor: wait;
+	opacity: 0.6;
+	pointer-events: none;
+}
+
+.inat-quick-add-btn:focus-visible {
+	outline: 2px solid var(--qa-border, #74ac00);
+	outline-offset: 2px;
+}
+
+.inat-quick-add-thumb-wrap {
+	width: 31px;
+	height: 31px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	overflow: hidden;
+	border-radius: 0;
+	border-right: 1.5px solid var(--qa-border, #c8daa5);
+	background-color: #fff;
+	line-height: 1;
+	filter: none;
+	flex-shrink: 0;
+}
+
+.inat-quick-add-thumb {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+}
+
+.inat-quick-add-text {
+	/* Inherits color from button */
+}
+
+/* Row 2: Placeholder Styles in Grid layout */
+.inat-quick-add-placeholder-label {
+	color: #9aa3af;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	white-space: nowrap;
+	line-height: 1;
+	justify-self: start;
+	align-self: center;
+	
+	border-top: 1px dashed #e8eaed;
+	padding-top: 8px;
+	margin-top: 2px;
+	width: 100%;
+}
+
+.inat-quick-add-placeholder-wrapper-container {
+	display: flex;
+	align-items: center;
+	width: 100%;
+	border-top: 1px dashed #e8eaed;
+	padding-top: 8px;
+	margin-top: 2px;
+}
+
+.inat-quick-add-placeholder-wrapper {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	background: #ffffff;
+	border: 1px solid #dcdcdc;
+	border-radius: 6px;
+	padding: 3px 8px;
+	cursor: pointer;
+	transition: all 0.2s ease;
+	max-width: 100%;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+.inat-quick-add-placeholder-wrapper:hover {
+	background: #f4f9eb;
+	border-color: #a4d257;
+	box-shadow: 0 1px 4px rgba(116, 172, 0, 0.08);
+}
+
+.inat-quick-add-placeholder-wrapper:active {
+	transform: scale(0.98);
+}
+
+.inat-quick-add-placeholder-value {
+	font-size: 11px;
+	font-weight: 600;
+	color: #4a4a4a;
+	font-family: monospace, monospace;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	transition: color 0.15s ease;
+}
+
+.inat-quick-add-placeholder-value.copied {
+	color: #74ac00;
+}
+
+.inat-quick-add-placeholder-copy {
+	font-size: 12px;
+	color: #74ac00;
+	line-height: 1;
+	user-select: none;
+}
+
+
+

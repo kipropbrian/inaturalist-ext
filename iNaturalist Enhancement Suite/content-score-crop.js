@@ -22,7 +22,6 @@ chrome.storage.sync.get({
 	const logError = window.iNatLogError || console.error;
 	const logWarn = window.iNatLogWarn || console.warn;
 	const taxonHierarchyCache = new Map();
-	const CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
 
 	async function cacheKey(namespace, value) {
 		const bytes = new TextEncoder().encode(value);
@@ -33,99 +32,12 @@ chrome.storage.sync.get({
 		return `inat-${namespace}-${hash}`;
 	}
 
-	const MAX_CACHE_SIZE = 100 * 1024 * 1024; // 100 MB
-	const TARGET_CACHE_SIZE = 80 * 1024 * 1024; // 80 MB
-
-	function evictOldCacheIfNeeded() {
-		return new Promise(resolve => {
-			chrome.storage.local.getBytesInUse(null, bytes => {
-				if (chrome.runtime.lastError) {
-					resolve();
-					return;
-				}
-				if (bytes < MAX_CACHE_SIZE) {
-					resolve();
-					return;
-				}
-
-				log('Cache size limit approached. Current size:', bytes, 'bytes. Starting eviction...');
-				chrome.storage.local.get(null, allData => {
-					if (chrome.runtime.lastError || !allData) {
-						resolve();
-						return;
-					}
-
-					const cacheEntries = [];
-					for (const [key, item] of Object.entries(allData)) {
-						if (key.startsWith('inat-') && item && typeof item.savedAt === 'number') {
-							cacheEntries.push({ key, savedAt: item.savedAt, size: JSON.stringify(item).length });
-						}
-					}
-
-					// Sort oldest first
-					cacheEntries.sort((a, b) => a.savedAt - b.savedAt);
-
-					let currentBytes = bytes;
-					const keysToRemove = [];
-					for (const entry of cacheEntries) {
-						if (currentBytes < TARGET_CACHE_SIZE) {
-							break;
-						}
-						keysToRemove.push(entry.key);
-						currentBytes -= entry.size;
-					}
-
-					if (keysToRemove.length > 0) {
-						log('Evicting', keysToRemove.length, 'old cache entries...');
-						chrome.storage.local.remove(keysToRemove, () => {
-							if (chrome.runtime.lastError) {
-								logError('Failed to evict old cache entries:', chrome.runtime.lastError.message);
-							}
-							resolve();
-						});
-					} else {
-						resolve();
-					}
-				});
-			});
-		});
-	}
-
 	function readPersistentCache(key) {
-		return new Promise(resolve => {
-			chrome.storage.local.get(key, result => {
-				if (chrome.runtime.lastError) {
-					logError('Failed to read from persistent cache:', chrome.runtime.lastError.message);
-					resolve(null);
-					return;
-				}
-				const entry = result ? result[key] : null;
-				if (!entry || Date.now() - entry.savedAt > CACHE_TTL) {
-					if (entry) {
-						chrome.storage.local.remove(key, () => {
-							if (chrome.runtime.lastError) {
-								logError('Failed to remove from persistent cache:', chrome.runtime.lastError.message);
-							}
-						});
-					}
-					resolve(null);
-					return;
-				}
-				resolve(entry.value);
-			});
-		});
+		return window.iNatCache.read(key);
 	}
 
 	function writePersistentCache(key, value) {
-		return new Promise(async resolve => {
-			await evictOldCacheIfNeeded();
-			chrome.storage.local.set({ [key]: { savedAt: Date.now(), value } }, () => {
-				if (chrome.runtime.lastError) {
-					logError('Failed to write to persistent cache:', chrome.runtime.lastError.message);
-				}
-				resolve();
-			});
-		});
+		return window.iNatCache.write(key, value);
 	}
 
 	// Load Cropper.js CSS from extension bundle
@@ -686,8 +598,10 @@ chrome.storage.sync.get({
 	let cropper = null;
 	let cvResultsCache = null; // Cache for CV results, invalidated on crop change
 	let modalInitialized = false;
-	const scoreResultsCache = new Map(); // Cache CV results by image URL
+	const scoreResultsCache = new Map(); // Cache CV results by observation, image, and metadata
 	let scoreResultsVisible = false;
+	let scoreRequestSequence = 0;
+	let currentObservationId = null;
 
 	// Capture observation location from API responses. domContext.js intercepts
 	// iNaturalist's fetch calls and dispatches observationFetch with the location
@@ -695,7 +609,14 @@ chrome.storage.sync.get({
 	// before MapDetails renders.
 	let lastObservationLocation = null;
 	document.addEventListener('observationFetch', (event) => {
-		lastObservationLocation = event.detail?.location || null;
+		const observation = event.detail?.observation;
+		const nextObservationId = observation?.id == null ? null : String(observation.id);
+		if (nextObservationId && nextObservationId !== currentObservationId) {
+			currentObservationId = nextObservationId;
+			closeScoreResults();
+			closeCropModal();
+		}
+		lastObservationLocation = event.detail?.location || observation?.location || null;
 		log('Observation location updated:', lastObservationLocation);
 	});
 
@@ -908,6 +829,9 @@ chrome.storage.sync.get({
 
 	// Score an image without cropping
 	async function scoreCurrentImage(imageUrl, buttonContainer) {
+		const requestSequence = ++scoreRequestSequence;
+		const observationId = currentObservationId;
+
 		// Create standalone panel if needed
 		if (!scoreResultsPanel) {
 			scoreResultsPanel = createScoreResultsPanel();
@@ -940,28 +864,31 @@ chrome.storage.sync.get({
 		scoreResultsVisible = true;
 
 		const metadata = getObservationMetadata();
+		const cacheIdentity = `${observationId || 'unknown'}|${imageUrl}|${JSON.stringify(metadata)}`;
+		const persistentKey = await cacheKey('cv-score', cacheIdentity);
+
+		// Never leave results from the previous observation visible while checking cache.
+		loadingEl.textContent = 'Loading suggestions...';
+		loadingEl.style.display = 'block';
+		resultsList.innerHTML = '';
 
 		// Check memory and persistent caches before downloading or scoring.
-		if (scoreResultsCache.has(imageUrl)) {
+		if (scoreResultsCache.has(persistentKey)) {
 			log('Using cached score results for', imageUrl);
+			if (!isCurrentScoreRequest(requestSequence, observationId, imageUrl)) return;
 			loadingEl.style.display = 'none';
-			displayCVResults(scoreResultsCache.get(imageUrl), resultsList, closeScoreResults);
+			displayCVResults(scoreResultsCache.get(persistentKey), resultsList, closeScoreResults);
 			return;
 		}
-		const persistentKey = await cacheKey('cv-score', `${imageUrl}|${JSON.stringify(metadata)}`);
 		const persistentResult = await readPersistentCache(persistentKey);
 		if (persistentResult) {
 			log('Using persistent score results for', imageUrl);
-			scoreResultsCache.set(imageUrl, persistentResult);
+			scoreResultsCache.set(persistentKey, persistentResult);
+			if (!isCurrentScoreRequest(requestSequence, observationId, imageUrl)) return;
 			loadingEl.style.display = 'none';
 			displayCVResults(persistentResult, resultsList, closeScoreResults);
 			return;
 		}
-
-		// Show loading state
-		loadingEl.textContent = 'Loading suggestions...';
-		loadingEl.style.display = 'block';
-		resultsList.innerHTML = '';
 
 		try {
 			// Fetch image via background script
@@ -971,19 +898,28 @@ chrome.storage.sync.get({
 			const data = await callScoreImageAPI(imageDataUrl, metadata);
 			log('Score results:', data);
 
-			// Cache the results by image URL
-			scoreResultsCache.set(imageUrl, data);
+			// Cache against the complete request identity, not only a SPA image URL.
+			scoreResultsCache.set(persistentKey, data);
 			await writePersistentCache(persistentKey, data);
 
+			if (!isCurrentScoreRequest(requestSequence, observationId, imageUrl)) return;
 			loadingEl.style.display = 'none';
 			displayCVResults(data, resultsList, closeScoreResults);
 		} catch (error) {
+			if (!isCurrentScoreRequest(requestSequence, observationId, imageUrl)) return;
 			logError('Score image error:', error);
 			loadingEl.textContent = 'Error: ' + error.message;
 		}
 	}
 
+	function isCurrentScoreRequest(requestSequence, observationId, imageUrl) {
+		return requestSequence === scoreRequestSequence
+			&& observationId === currentObservationId
+			&& imageUrl === getCurrentPhotoUrl();
+	}
+
 	function closeScoreResults() {
+		scoreRequestSequence++;
 		if (scoreResultsPanel) {
 			scoreResultsPanel.classList.remove('visible');
 		}
@@ -1544,7 +1480,7 @@ chrome.storage.sync.get({
 		// Try multiple selectors for different page layouts
 		const selectors = [
 			'.image-gallery-slide.center img',           // Main gallery current slide
-			'.image-gallery-slide img',                   // Fallback gallery
+			'.image-gallery-slide[aria-hidden="false"] img', // Accessible current slide
 			'.PhotoBrowser img',                          // Photo browser
 			'.ObservationPhoto img',                      // Observation photo
 			'.photo-container img'                        // Photo container
@@ -1576,19 +1512,17 @@ chrome.storage.sync.get({
 			return pendingFetches.get(url);
 		}
 
-		const promise = new Promise((resolve, reject) => {
-			chrome.runtime.sendMessage({ action: 'fetchImage', url }, response => {
+		const promise = (async () => {
+			try {
+				if (!chrome.runtime?.id) throw new Error('Extension context invalidated. Refresh the page.');
+				const response = await chrome.runtime.sendMessage({ action: 'fetchImage', url });
+				if (!response?.success) throw new Error(response?.error || 'Image fetch failed');
+				imageCache.set(url, response.dataUrl);
+				return response.dataUrl;
+			} finally {
 				pendingFetches.delete(url);
-				if (chrome.runtime.lastError) {
-					reject(new Error(chrome.runtime.lastError.message));
-				} else if (response.success) {
-					imageCache.set(url, response.dataUrl);
-					resolve(response.dataUrl);
-				} else {
-					reject(new Error(response.error));
-				}
-			});
-		});
+			}
+		})();
 
 		pendingFetches.set(url, promise);
 		return promise;

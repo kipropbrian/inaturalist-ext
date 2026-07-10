@@ -48,10 +48,18 @@ chrome.storage.sync.get({
 
 	const counts = new Map();
 	async function getObservationCount(user, taxonId, placeId) {
-		const key = `${taxonId}#${placeId || 'null'}`
+		const key = `${taxonId}#${placeId || 'null'}`;
 		let count = counts.get(key);
 		if (count !== undefined) {
-			logDebug(`Using cached count ${count} for ${key}.`);
+			logDebug(`Using L1 cached count ${count} for ${key}.`);
+			return count;
+		}
+
+		const persistentKey = `inat-taxacount-${user}-${taxonId}-${placeId || 'null'}`;
+		count = await window.iNatCache.read(persistentKey);
+		if (count !== null && count !== undefined) {
+			logDebug(`Using L2 cached count ${count} for ${key}.`);
+			counts.set(key, count);
 			return count;
 		}
 
@@ -62,12 +70,19 @@ chrome.storage.sync.get({
 
 		logDebug(`Requesting ${url}`);
 
-		const response = await fetch(url);
-		const observations = await response.json();
-		count = observations.total_results;
-		logDebug(`Retrieved count ${count} for ${key}.`);
+		try {
+			const response = await fetch(url);
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			const observations = await response.json();
+			count = observations.total_results;
+			logDebug(`Retrieved count ${count} for ${key}.`);
 
-		counts.set(key, count);
-		return count;
+			counts.set(key, count);
+			await window.iNatCache.write(persistentKey, count);
+			return count;
+		} catch (error) {
+			console.error(`[iNat Enhancement] Failed to fetch observation count for ${key}:`, error.message || error);
+			return null;
+		}
 	}
 });

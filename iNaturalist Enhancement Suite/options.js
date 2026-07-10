@@ -11,7 +11,9 @@ function saveOptions() {
     const enableIdentifierStats = document.getElementById('identifier-stats').checked;
     const enableFilenameDate = document.getElementById('filename-date').checked;
     const enableIdentificationExplorer = document.getElementById('identification-explorer').checked;
+    const enableQuickPlant = document.getElementById('quick-plant').checked;
     const enableSimilarSpeciesTab = document.getElementById('similar-species-tab').checked;
+    const enableTaxonPhotosTab = document.getElementById('taxon-photos-tab').checked;
     const enableLogging = document.getElementById('enable-logging').checked;
     chrome.storage.sync.set({
         enableColorVision,
@@ -26,7 +28,9 @@ function saveOptions() {
         enableIdentifierStats,
         enableFilenameDate,
         enableIdentificationExplorer,
+        enableQuickPlant,
         enableSimilarSpeciesTab,
+        enableTaxonPhotosTab,
         enableLogging
     }, function() {
         if (chrome.runtime.lastError) {
@@ -57,7 +61,9 @@ function restoreOptions() {
         enableIdentifierStats: true,
         enableFilenameDate: true,
         enableIdentificationExplorer: true,
+        enableQuickPlant: true,
         enableSimilarSpeciesTab: true,
+        enableTaxonPhotosTab: true,
         enableLogging: false
     }, function(items) {
         if (chrome.runtime.lastError) {
@@ -77,7 +83,9 @@ function restoreOptions() {
         document.getElementById('identifier-stats').checked = items.enableIdentifierStats;
         document.getElementById('filename-date').checked = items.enableFilenameDate;
         document.getElementById('identification-explorer').checked = items.enableIdentificationExplorer;
+        document.getElementById('quick-plant').checked = items.enableQuickPlant;
         document.getElementById('similar-species-tab').checked = items.enableSimilarSpeciesTab;
+        document.getElementById('taxon-photos-tab').checked = items.enableTaxonPhotosTab;
         colorVisionFeature.dispatchEvent(new Event('change'));
         scoreImageFeature.dispatchEvent(new Event('change'));
     });

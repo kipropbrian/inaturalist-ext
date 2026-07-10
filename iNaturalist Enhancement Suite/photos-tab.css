@@ -1,0 +1,183 @@
+/* ── Custom Taxon Photos Tab styling in the ObservationModal ────────────── */
+
+/* Hide native tabs when our custom tab is active */
+.ObservationModal.inat-custom-tab-active .inat-tab:not(.taxon-photos-tab) {
+    display: none !important;
+}
+
+/* Custom Tab Panel container */
+.inat-tab.taxon-photos-tab {
+    display: none;
+    flex-direction: column;
+    height: 100%;
+    padding: 15px;
+    overflow-y: auto;
+    box-sizing: border-box;
+}
+
+.inat-tab.taxon-photos-tab.active {
+    display: flex;
+}
+
+/* Header & Controls */
+.taxon-photos-header {
+    margin-bottom: 15px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.taxon-photos-header h3 {
+    margin: 0 0 4px 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: #333;
+}
+
+.taxon-photos-header p {
+    margin: 0 0 10px 0;
+    font-size: 12px;
+    color: #666;
+    line-height: 1.4;
+}
+
+.taxon-photos-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    font-size: 13px;
+    color: #333;
+}
+
+.taxon-photos-controls input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+}
+
+.taxon-photos-controls label {
+    margin: 0;
+    cursor: pointer;
+    font-weight: normal;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Responsive 3-Column Grid */
+.taxon-photos-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin: 0 0 15px 0;
+    padding: 0;
+    list-style: none;
+}
+
+/* Grid Item Card */
+.taxon-photos-item {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    overflow: hidden;
+    border-radius: 6px;
+    background-color: #f0f0f0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.taxon-photos-item a {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.taxon-photos-item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.taxon-photos-item:hover img {
+    transform: scale(1.08);
+}
+
+/* Spinner Loader */
+.taxon-photos-loading-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 30px 10px;
+    color: #666;
+    font-size: 13px;
+    font-style: italic;
+    gap: 10px;
+}
+
+.taxon-photos-spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid rgba(0, 0, 0, 0.1);
+    border-top: 2px solid #74ac00; /* iNat green */
+    border-radius: 50%;
+    animation: taxon-photos-spin 0.8s linear infinite;
+}
+
+@keyframes taxon-photos-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Empty State & Error styling */
+.taxon-photos-empty {
+    padding: 30px 15px;
+    text-align: center;
+    color: #777;
+    font-size: 13px;
+    background: #fafafa;
+    border-radius: 6px;
+    border: 1px dashed rgba(0, 0, 0, 0.1);
+    line-height: 1.5;
+}
+
+.taxon-photos-empty strong {
+    color: #333;
+    display: block;
+    margin-bottom: 6px;
+}
+
+.taxon-photos-error {
+    padding: 15px;
+    color: #a94442;
+    background-color: #f2dede;
+    border: 1px solid #ebccd1;
+    border-radius: 4px;
+    font-size: 13px;
+    margin-bottom: 15px;
+}
+
+/* Pagination Styling */
+.taxon-photos-pagination-container button {
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.taxon-photos-pagination-container button:hover:not(:disabled) {
+    background-color: #eee !important;
+    border-color: #bbb !important;
+}
+
+.taxon-photos-pagination-container button:active:not(:disabled) {
+    background-color: #e0e0e0 !important;
+}
+
+/* Browse photos link */
+.taxon-photos-browse-link:hover {
+    color: #5b8700 !important;
+    text-decoration: underline !important;
+}
+
+/* styling for custom tab button in native list to match native tabs */
+.inat-tabs li.taxon-photos-tab-li button {
+    font-weight: bold;
+}
