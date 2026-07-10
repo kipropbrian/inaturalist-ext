@@ -1,49 +1,34 @@
 // Background script for handling cross-origin image requests and local machine learning inference
 import { loadLiteRt, loadAndCompile, Tensor } from './lib/litert/litert.js';
 
-let isLiteRtInitializing = false;
-let isLiteRtLoaded = false;
 let compiledModel = null;
 
-// Initialize LiteRT.js and load the EfficientDet-Lite0 model
-async function initDetector() {
-	if (isLiteRtLoaded) return;
-	if (isLiteRtInitializing) {
-		// Wait for existing initialization promise to complete
-		while (isLiteRtInitializing) {
-			await new Promise(resolve => setTimeout(resolve, 50));
-		}
-		return;
-	}
+// Initialize LiteRT.js and load the EfficientDet-Lite0 model at top-level startup
+// This avoids dynamic importScripts calls inside async contexts which is blocked in MV3.
+console.log('[iNat Enhancement Suite] Initializing LiteRT.js runtime at startup...');
+const startTime = performance.now();
+try {
+	// Point to the directory containing local WASM files
+	const wasmDir = chrome.runtime.getURL('lib/litert/wasm/');
+	await loadLiteRt(wasmDir);
+	console.log('[iNat Enhancement Suite] LiteRT.js runtime loaded successfully.');
 
-	isLiteRtInitializing = true;
-	console.log('[iNat Enhancement Suite] Initializing LiteRT.js runtime...');
-	const startTime = performance.now();
-	try {
-		// Point to the directory containing local WASM files
-		const wasmDir = chrome.runtime.getURL('lib/litert/wasm/');
-		await loadLiteRt(wasmDir);
-		console.log('[iNat Enhancement Suite] LiteRT.js runtime loaded successfully.');
-
-		// Load and compile the quantized EfficientDet-Lite0 model
-		const modelPath = chrome.runtime.getURL('lib/litert/models/efficientdet_lite0.tflite');
-		console.log('[iNat Enhancement Suite] Compiling EfficientDet-Lite0 model from:', modelPath);
-		compiledModel = await loadAndCompile(modelPath);
-		
-		isLiteRtLoaded = true;
-		const duration = (performance.now() - startTime).toFixed(1);
-		console.log(`[iNat Enhancement Suite] EfficientDet-Lite0 compiled in ${duration}ms.`);
-	} catch (error) {
-		console.error('[iNat Enhancement Suite] Failed to initialize LiteRT detector:', error);
-		throw error;
-	} finally {
-		isLiteRtInitializing = false;
-	}
+	// Load and compile the quantized EfficientDet-Lite0 model
+	const modelPath = chrome.runtime.getURL('lib/litert/models/efficientdet_lite0.tflite');
+	console.log('[iNat Enhancement Suite] Compiling EfficientDet-Lite0 model from:', modelPath);
+	compiledModel = await loadAndCompile(modelPath);
+	
+	const duration = (performance.now() - startTime).toFixed(1);
+	console.log(`[iNat Enhancement Suite] EfficientDet-Lite0 model compiled successfully in ${duration}ms.`);
+} catch (error) {
+	console.error('[iNat Enhancement Suite] Failed to initialize LiteRT detector at startup:', error);
 }
 
 // Perform local object detection on an image URL
 async function runDetection(imageUrl) {
-	await initDetector();
+	if (!compiledModel) {
+		throw new Error('LiteRT detector model is not initialized yet.');
+	}
 
 	const startTime = performance.now();
 	// Fetch image as blob
