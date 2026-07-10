@@ -589,6 +589,19 @@ chrome.storage.sync.get({
 				color: #666;
 				padding: 12px 16px;
 			}
+			/* Smart crop active styles */
+			#inat-crop-modal.smart-crop-active .cropper-view-box {
+				outline: 2px solid #74ac00 !important;
+			}
+			#inat-crop-modal.smart-crop-active .cropper-line,
+			#inat-crop-modal.smart-crop-active .cropper-point {
+				background-color: #74ac00 !important;
+			}
+			.inat-crop-btn:disabled {
+				cursor: default;
+				opacity: 0.5;
+				background: #f5f5f5 !important;
+			}
 		`;
 		document.head.appendChild(styles);
 		document.body.appendChild(modal);
@@ -657,7 +670,7 @@ chrome.storage.sync.get({
 				if (detectedBox) {
 					applyDetectedBox();
 				} else {
-					logWarn('Smart auto-crop requested, but no detected subject is available.');
+					alert('Smart Crop: No target subject was detected in this photo.');
 				}
 			});
 		}
@@ -710,6 +723,7 @@ chrome.storage.sync.get({
 			width: cropW,
 			height: cropH
 		});
+		modal.classList.add('smart-crop-active');
 		log('Smart auto-crop bounding box applied:', { cropX, cropY, cropW, cropH });
 	}
 
@@ -737,15 +751,25 @@ chrome.storage.sync.get({
 		// Show modal immediately
 		modal.classList.add('active');
 
+		// Set the smart auto-crop button to loading state
+		const autoCropBtn = modal.querySelector('.inat-crop-auto-crop');
+		if (autoCropBtn) {
+			autoCropBtn.textContent = '⏳';
+			autoCropBtn.disabled = true;
+			autoCropBtn.title = 'Smart Crop: Analyzing image...';
+		}
+
 		// Reset detectedBox for the new image and trigger detection in the background
 		detectedBox = null;
 		chrome.runtime.sendMessage({ action: 'detectSubject', imageUrl }, response => {
+			if (autoCropBtn) {
+				autoCropBtn.textContent = '✨';
+				autoCropBtn.disabled = false;
+				autoCropBtn.title = 'Smart Auto-Crop';
+			}
 			if (response?.success && response.box) {
 				detectedBox = response.box;
 				log('Smart auto-crop found bounding box:', detectedBox);
-				if (cropper) {
-					applyDetectedBox();
-				}
 			} else {
 				logWarn('Smart auto-crop detection failed or returned no subjects:', response?.error);
 			}
@@ -775,13 +799,12 @@ chrome.storage.sync.get({
 				cropend: function() {
 					cvResultsCache = null;
 					log('Crop changed, cache invalidated');
+				},
+				// Clear smart-crop-active class if the user adjusts the crop box manually
+				cropstart: function() {
+					modal.classList.remove('smart-crop-active');
 				}
 			});
-
-			// If bounding box was already detected before initialization, apply it immediately
-			if (detectedBox) {
-				applyDetectedBox();
-			}
 		}
 
 		// Fetch image via background script (bypasses CORS)
@@ -801,6 +824,7 @@ chrome.storage.sync.get({
 	function closeCropModal() {
 		if (modal) {
 			modal.classList.remove('active');
+			modal.classList.remove('smart-crop-active');
 		}
 		// Clear the CV results cache
 		cvResultsCache = null;
