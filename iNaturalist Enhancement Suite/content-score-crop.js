@@ -344,6 +344,7 @@ chrome.storage.sync.get({
 						<div class="inat-crop-toolbar">
 							<button class="inat-crop-btn inat-crop-rotate-left" title="Rotate left">&#x21BA;</button>
 							<button class="inat-crop-btn inat-crop-rotate-right" title="Rotate right">&#x21BB;</button>
+							<button class="inat-crop-btn inat-crop-auto-crop" title="Smart Auto-Crop" style="display: flex; align-items: center; justify-content: center; font-size: 16px; padding: 0 8px;">✨</button>
 						</div>
 						<button class="inat-crop-close">&times;</button>
 					</div>
@@ -598,6 +599,7 @@ chrome.storage.sync.get({
 	let cropper = null;
 	let cvResultsCache = null; // Cache for CV results, invalidated on crop change
 	let modalInitialized = false;
+	let detectedBox = null;
 	const scoreResultsCache = new Map(); // Cache CV results by observation, image, and metadata
 	let scoreResultsVisible = false;
 	let scoreRequestSequence = 0;
@@ -649,6 +651,15 @@ chrome.storage.sync.get({
 			modal.querySelector('.inat-crop-results-close').addEventListener('click', () => {
 				modal.querySelector('.inat-crop-results').classList.remove('visible');
 			});
+			modal.querySelector('.inat-crop-auto-crop').addEventListener('click', (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				if (detectedBox) {
+					applyDetectedBox();
+				} else {
+					logWarn('Smart auto-crop requested, but no detected subject is available.');
+				}
+			});
 		}
 
 		return modal;
@@ -678,6 +689,30 @@ chrome.storage.sync.get({
 		}
 	}
 
+	function applyDetectedBox() {
+		if (!cropper || !detectedBox) return;
+		const imageData = cropper.getImageData();
+		const imgWidth = imageData.naturalWidth;
+		const imgHeight = imageData.naturalHeight;
+
+		// EfficientDet-Lite0 outputs box as normalized [ymin, xmin, ymax, xmax]
+		const { ymin, xmin, ymax, xmax } = detectedBox;
+
+		// Convert to pixel coordinates relative to the original image dimensions
+		const cropX = xmin * imgWidth;
+		const cropY = ymin * imgHeight;
+		const cropW = (xmax - xmin) * imgWidth;
+		const cropH = (ymax - ymin) * imgHeight;
+
+		cropper.setData({
+			x: cropX,
+			y: cropY,
+			width: cropW,
+			height: cropH
+		});
+		log('Smart auto-crop bounding box applied:', { cropX, cropY, cropW, cropH });
+	}
+
 	function openCropModal(imageUrl) {
 		ensureModalExists();
 
@@ -701,6 +736,20 @@ chrome.storage.sync.get({
 
 		// Show modal immediately
 		modal.classList.add('active');
+
+		// Reset detectedBox for the new image and trigger detection in the background
+		detectedBox = null;
+		chrome.runtime.sendMessage({ action: 'detectSubject', imageUrl }, response => {
+			if (response?.success && response.box) {
+				detectedBox = response.box;
+				log('Smart auto-crop found bounding box:', detectedBox);
+				if (cropper) {
+					applyDetectedBox();
+				}
+			} else {
+				logWarn('Smart auto-crop detection failed or returned no subjects:', response?.error);
+			}
+		});
 
 		// Initialize cropper when image is ready
 		function initCropper() {
@@ -728,6 +777,11 @@ chrome.storage.sync.get({
 					log('Crop changed, cache invalidated');
 				}
 			});
+
+			// If bounding box was already detected before initialization, apply it immediately
+			if (detectedBox) {
+				applyDetectedBox();
+			}
 		}
 
 		// Fetch image via background script (bypasses CORS)

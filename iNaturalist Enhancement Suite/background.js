@@ -1,17 +1,148 @@
-// Background script for handling cross-origin image requests
-//
-// This is needed because static.inaturalist.org blocks CORS, so content scripts
-// can't fetch images directly. The background script has elevated permissions
-// via host_permissions in manifest.json to bypass this restriction.
-//
-// Note: Images on inaturalist-open-data.s3.amazonaws.com have permissive CORS
-// and could be fetched directly from content scripts, but we use the background
-// script for all image fetches for simplicity.
+// Background script for handling cross-origin image requests and local machine learning inference
+import { loadLiteRt, loadAndCompile, Tensor } from './lib/litert/litert.js';
 
+let isLiteRtInitializing = false;
+let isLiteRtLoaded = false;
+let compiledModel = null;
+
+// Initialize LiteRT.js and load the EfficientDet-Lite0 model
+async function initDetector() {
+	if (isLiteRtLoaded) return;
+	if (isLiteRtInitializing) {
+		// Wait for existing initialization promise to complete
+		while (isLiteRtInitializing) {
+			await new Promise(resolve => setTimeout(resolve, 50));
+		}
+		return;
+	}
+
+	isLiteRtInitializing = true;
+	console.log('[iNat Enhancement Suite] Initializing LiteRT.js runtime...');
+	const startTime = performance.now();
+	try {
+		// Point to the directory containing local WASM files
+		const wasmDir = chrome.runtime.getURL('lib/litert/wasm/');
+		await loadLiteRt(wasmDir);
+		console.log('[iNat Enhancement Suite] LiteRT.js runtime loaded successfully.');
+
+		// Load and compile the quantized EfficientDet-Lite0 model
+		const modelPath = chrome.runtime.getURL('lib/litert/models/efficientdet_lite0.tflite');
+		console.log('[iNat Enhancement Suite] Compiling EfficientDet-Lite0 model from:', modelPath);
+		compiledModel = await loadAndCompile(modelPath);
+		
+		isLiteRtLoaded = true;
+		const duration = (performance.now() - startTime).toFixed(1);
+		console.log(`[iNat Enhancement Suite] EfficientDet-Lite0 compiled in ${duration}ms.`);
+	} catch (error) {
+		console.error('[iNat Enhancement Suite] Failed to initialize LiteRT detector:', error);
+		throw error;
+	} finally {
+		isLiteRtInitializing = false;
+	}
+}
+
+// Perform local object detection on an image URL
+async function runDetection(imageUrl) {
+	await initDetector();
+
+	const startTime = performance.now();
+	// Fetch image as blob
+	const response = await fetch(imageUrl);
+	if (!response.ok) {
+		throw new Error(`Failed to fetch image for detection (HTTP ${response.status})`);
+	}
+	const blob = await response.blob();
+
+	// Load image into bitmap and draw onto OffscreenCanvas for resizing
+	const bitmap = await createImageBitmap(blob);
+	const width = 320;
+	const height = 320;
+	const canvas = new OffscreenCanvas(width, height);
+	const ctx = canvas.getContext('2d');
+	ctx.drawImage(bitmap, 0, 0, width, height);
+
+	// Extract RGB pixel data (ignore alpha channel)
+	const imgData = ctx.getImageData(0, 0, width, height);
+	const rgbData = new Uint8Array(width * height * 3);
+	let dstIdx = 0;
+	for (let srcIdx = 0; srcIdx < imgData.data.length; srcIdx += 4) {
+		rgbData[dstIdx++] = imgData.data[srcIdx];     // R
+		rgbData[dstIdx++] = imgData.data[srcIdx + 1]; // G
+		rgbData[dstIdx++] = imgData.data[srcIdx + 2]; // B
+	}
+
+	// Create input tensor [1, 320, 320, 3]
+	const inputTensor = new Tensor(rgbData, [1, height, width, 3]);
+
+	// Run inference
+	console.log('[iNat Enhancement Suite] Running on-device object detection...');
+	const results = await compiledModel.run(inputTensor);
+
+	// Retrieve outputs from WASM memory
+	// EfficientDet-Lite0 outputs:
+	// results[0]: detection boxes [1, 25, 4] or [1, 100, 4]
+	// results[1]: detection classes [1, 25] or [1, 100]
+	// results[2]: detection scores [1, 25] or [1, 100]
+	// results[3]: num detections [1]
+	const boxesTensor = await results[0].moveTo('wasm');
+	const classesTensor = await results[1].moveTo('wasm');
+	const scoresTensor = await results[2].moveTo('wasm');
+	const countTensor = await results[3].moveTo('wasm');
+
+	const boxes = boxesTensor.toTypedArray();     // Float32Array of ymin, xmin, ymax, xmax
+	const classes = classesTensor.toTypedArray(); // Float32Array/Int32Array of class IDs
+	const scores = scoresTensor.toTypedArray();   // Float32Array of confidence scores
+	const count = countTensor.toTypedArray()[0];   // Number of detections
+
+	const inferenceDuration = (performance.now() - startTime).toFixed(1);
+	console.log(`[iNat Enhancement Suite] Local inference complete in ${inferenceDuration}ms. Found ${count} candidate objects.`);
+
+	// Free up temporary output tensors
+	boxesTensor.delete();
+	classesTensor.delete();
+	scoresTensor.delete();
+	countTensor.delete();
+	inputTensor.delete();
+
+	// Scan detections for the highest confidence organism/subject box
+	let bestBox = null;
+	let maxScore = 0.25; // Minimum confidence threshold
+
+	for (let i = 0; i < count; i++) {
+		const score = scores[i];
+		if (score > maxScore) {
+			maxScore = score;
+			const baseBoxIdx = i * 4;
+			bestBox = {
+				ymin: boxes[baseBoxIdx],
+				xmin: boxes[baseBoxIdx + 1],
+				ymax: boxes[baseBoxIdx + 2],
+				xmax: boxes[baseBoxIdx + 3]
+			};
+		}
+	}
+
+	if (bestBox) {
+		console.log(`[iNat Enhancement Suite] Detected target subject with confidence ${(maxScore * 100).toFixed(1)}% at:`, bestBox);
+	} else {
+		console.log('[iNat Enhancement Suite] No objects detected above the confidence threshold.');
+	}
+
+	return bestBox;
+}
+
+// Runtime message listener
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 	if (request.action === 'fetchImage') {
 		fetchImageAsDataUrl(request.url)
 			.then(dataUrl => sendResponse({ success: true, dataUrl }))
+			.catch(error => sendResponse({ success: false, error: error.message }));
+		return true; // Keep channel open for async response
+	}
+
+	if (request.action === 'detectSubject') {
+		runDetection(request.imageUrl)
+			.then(box => sendResponse({ success: true, box }))
 			.catch(error => sendResponse({ success: false, error: error.message }));
 		return true; // Keep channel open for async response
 	}
