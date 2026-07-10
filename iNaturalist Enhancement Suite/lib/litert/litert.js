@@ -40,9 +40,15 @@ var LiteRT = (() => {
 
   // node_modules/@litertjs/wasm-utils/dist/index.js
   async function runScript(scriptUrl) {
-    if (self.ModuleFactory) {
-      return;
+    const urlStr = scriptUrl.toString();
+    if (urlStr.includes("compat")) {
+      self.ModuleFactory = self.CompatModuleFactory;
+    } else {
+      self.ModuleFactory = self.StandardModuleFactory;
     }
+    return;
+  }
+  async function runScriptOld(scriptUrl) {
     if (typeof importScripts === "function") {
       importScripts(scriptUrl.toString());
     } else {

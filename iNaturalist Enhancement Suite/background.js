@@ -1,5 +1,17 @@
 // Background script for handling cross-origin image requests and local machine learning inference
+
+// Load the standard WASM loader and save its factory
 importScripts('./lib/litert/wasm/litert_wasm_internal.js');
+self.StandardModuleFactory = ModuleFactory;
+
+// Load the compat WASM loader and save its factory
+importScripts('./lib/litert/wasm/litert_wasm_compat_internal.js');
+self.CompatModuleFactory = ModuleFactory;
+
+// Clean up the global ModuleFactory variable to prevent polluting
+self.ModuleFactory = undefined;
+
+// Load the main LiteRT library
 importScripts('./lib/litert/litert.js');
 
 let compiledModel = null;
@@ -12,6 +24,14 @@ try {
 	// Point to the directory containing local WASM files
 	const wasmDir = chrome.runtime.getURL('lib/litert/wasm/');
 	const modelPath = chrome.runtime.getURL('lib/litert/models/efficientdet_lite0.tflite');
+
+	// Define self.Module to override locateFile for the WASM files.
+	// This ensures locateFile maps to the correct folder inside the extension.
+	self.Module = {
+		locateFile: (path) => {
+			return chrome.runtime.getURL('lib/litert/wasm/' + path);
+		}
+	};
 
 	LiteRT.loadLiteRt(wasmDir)
 		.then(() => {
