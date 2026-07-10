@@ -1,27 +1,34 @@
 // Background script for handling cross-origin image requests and local machine learning inference
-import { loadLiteRt, loadAndCompile, Tensor } from './lib/litert/litert.js';
+importScripts('./lib/litert/wasm/litert_wasm_internal.js');
+importScripts('./lib/litert/litert.js');
 
 let compiledModel = null;
 
 // Initialize LiteRT.js and load the EfficientDet-Lite0 model at top-level startup
-// This avoids dynamic importScripts calls inside async contexts which is blocked in MV3.
+// This avoids top-level await and dynamic importScripts calls inside async contexts (blocked in MV3).
 console.log('[iNat Enhancement Suite] Initializing LiteRT.js runtime at startup...');
 const startTime = performance.now();
 try {
 	// Point to the directory containing local WASM files
 	const wasmDir = chrome.runtime.getURL('lib/litert/wasm/');
-	await loadLiteRt(wasmDir);
-	console.log('[iNat Enhancement Suite] LiteRT.js runtime loaded successfully.');
-
-	// Load and compile the quantized EfficientDet-Lite0 model
 	const modelPath = chrome.runtime.getURL('lib/litert/models/efficientdet_lite0.tflite');
-	console.log('[iNat Enhancement Suite] Compiling EfficientDet-Lite0 model from:', modelPath);
-	compiledModel = await loadAndCompile(modelPath);
-	
-	const duration = (performance.now() - startTime).toFixed(1);
-	console.log(`[iNat Enhancement Suite] EfficientDet-Lite0 model compiled successfully in ${duration}ms.`);
+
+	LiteRT.loadLiteRt(wasmDir)
+		.then(() => {
+			console.log('[iNat Enhancement Suite] LiteRT.js runtime loaded successfully.');
+			console.log('[iNat Enhancement Suite] Compiling EfficientDet-Lite0 model from:', modelPath);
+			return LiteRT.loadAndCompile(modelPath);
+		})
+		.then(model => {
+			compiledModel = model;
+			const duration = (performance.now() - startTime).toFixed(1);
+			console.log(`[iNat Enhancement Suite] EfficientDet-Lite0 model compiled successfully in ${duration}ms.`);
+		})
+		.catch(error => {
+			console.error('[iNat Enhancement Suite] Failed to initialize LiteRT detector at startup:', error);
+		});
 } catch (error) {
-	console.error('[iNat Enhancement Suite] Failed to initialize LiteRT detector at startup:', error);
+	console.error('[iNat Enhancement Suite] Exception during LiteRT detector initialization:', error);
 }
 
 // Perform local object detection on an image URL
@@ -57,7 +64,7 @@ async function runDetection(imageUrl) {
 	}
 
 	// Create input tensor [1, 320, 320, 3]
-	const inputTensor = new Tensor(rgbData, [1, height, width, 3]);
+	const inputTensor = new LiteRT.Tensor(rgbData, [1, height, width, 3]);
 
 	// Run inference
 	console.log('[iNat Enhancement Suite] Running on-device object detection...');
