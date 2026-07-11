@@ -4,143 +4,253 @@
 importScripts('./lib/litert/wasm/litert_wasm_internal.js');
 self.StandardModuleFactory = ModuleFactory;
 
-// Load the compat WASM loader and save its factory
-importScripts('./lib/litert/wasm/litert_wasm_compat_internal.js');
-self.CompatModuleFactory = ModuleFactory;
-
 // Clean up the global ModuleFactory variable to prevent polluting
 self.ModuleFactory = undefined;
 
 // Load the main LiteRT library
 importScripts('./lib/litert/litert.js');
 
+const COCO_CLASSES = [
+	'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+	'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+	'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+	'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+	'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+	'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+	'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+	'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+	'hair drier', 'toothbrush'
+];
+
 let compiledModel = null;
+let liteRtInitializationPromise = null;
+let modelInitializationPromise = null;
 
-// Initialize LiteRT.js and load the EfficientDet-Lite0 model at top-level startup
-// This avoids top-level await and dynamic importScripts calls inside async contexts (blocked in MV3).
-console.log('[iNat Enhancement Suite] Initializing LiteRT.js runtime at startup...');
-const startTime = performance.now();
-try {
-	// Point to the directory containing local WASM files
-	const wasmDir = chrome.runtime.getURL('lib/litert/wasm/');
-	const modelPath = chrome.runtime.getURL('lib/litert/models/efficientdet_lite0.tflite');
-
-	// Define self.Module to override locateFile for the WASM files.
-	// This ensures locateFile maps to the correct folder inside the extension.
-	self.Module = {
-		locateFile: (path) => {
-			return chrome.runtime.getURL('lib/litert/wasm/' + path);
-		}
-	};
-
-	LiteRT.loadLiteRt(wasmDir)
-		.then(() => {
-			console.log('[iNat Enhancement Suite] LiteRT.js runtime loaded successfully.');
-			console.log('[iNat Enhancement Suite] Compiling EfficientDet-Lite0 model from:', modelPath);
-			return LiteRT.loadAndCompile(modelPath);
-		})
-		.then(model => {
-			compiledModel = model;
-			const duration = (performance.now() - startTime).toFixed(1);
-			console.log(`[iNat Enhancement Suite] EfficientDet-Lite0 model compiled successfully in ${duration}ms.`);
-		})
-		.catch(error => {
-			console.error('[iNat Enhancement Suite] Failed to initialize LiteRT detector at startup:', error);
+function getLiteRtRuntime(wasmDir) {
+	if (!liteRtInitializationPromise) {
+		// Ensure the Emscripten loader resolves the WASM binary inside the
+		// extension package. LiteRT clears this global after initialization.
+		self.Module = {
+			locateFile: path => chrome.runtime.getURL('lib/litert/wasm/' + path),
+			print: text => {
+				if (text && (text.startsWith('INFO:') || text.startsWith('WARNING:'))) return;
+				console.log(text);
+			},
+			printErr: text => {
+				if (text && (text.startsWith('INFO:') || text.startsWith('WARNING:'))) return;
+				console.warn(text);
+			}
+		};
+		liteRtInitializationPromise = LiteRT.loadLiteRt(wasmDir).catch(error => {
+			liteRtInitializationPromise = null;
+			throw error;
 		});
-} catch (error) {
-	console.error('[iNat Enhancement Suite] Exception during LiteRT detector initialization:', error);
+	}
+	return liteRtInitializationPromise;
+}
+
+async function initializeDetector() {
+	console.log('[iNat Enhancement Suite] Initializing LiteRT.js object localizer (YOLOv8n)...');
+	const startTime = performance.now();
+
+	const wasmDir = chrome.runtime.getURL('lib/litert/wasm/');
+	const modelPath = chrome.runtime.getURL('lib/litert/models/yolov8n.tflite');
+
+	await getLiteRtRuntime(wasmDir);
+	console.log('[iNat Enhancement Suite] LiteRT.js runtime loaded successfully.');
+	console.log('[iNat Enhancement Suite] Compiling YOLOv8-nano on CPU from:', modelPath);
+	compiledModel = await LiteRT.loadAndCompile(modelPath, { accelerator: 'wasm' });
+
+	const inputDetails = compiledModel.getInputDetails();
+	const outputDetails = compiledModel.getOutputDetails();
+	if (inputDetails.length !== 1 || outputDetails.length !== 1) {
+		throw new Error(`Unexpected object-localizer contract (${inputDetails.length} inputs, ${outputDetails.length} outputs).`);
+	}
+
+	const duration = (performance.now() - startTime).toFixed(1);
+	console.log(`[iNat Enhancement Suite] YOLOv8-nano compiled successfully in ${duration}ms.`, {
+		inputs: inputDetails.map(detail => ({ name: detail.name, dtype: detail.dtype, shape: Array.from(detail.shape) })),
+		outputs: outputDetails.map(detail => ({ name: detail.name, dtype: detail.dtype, shape: Array.from(detail.shape) }))
+	});
+	return compiledModel;
+}
+
+function getDetectorModel() {
+	if (compiledModel) return Promise.resolve(compiledModel);
+	if (!modelInitializationPromise) {
+		modelInitializationPromise = initializeDetector().catch(error => {
+			modelInitializationPromise = null;
+			console.error('[iNat Enhancement Suite] Failed to initialize LiteRT object localizer:', error);
+			throw error;
+		});
+	}
+	return modelInitializationPromise;
+}
+
+// Start warming the detector immediately, while allowing detection requests to
+// await the same promise instead of failing during model compilation.
+getDetectorModel().catch(() => {});
+
+function createPlanarRgbInput(imageData) {
+	const width = imageData.width;
+	const height = imageData.height;
+	const channelSize = width * height;
+	const rgbData = new Float32Array(channelSize * 3);
+	for (let i = 0; i < channelSize; i++) {
+		rgbData[i] = imageData.data[i * 4] / 255.0;                 // R channel
+		rgbData[channelSize + i] = imageData.data[i * 4 + 1] / 255.0;   // G channel
+		rgbData[channelSize * 2 + i] = imageData.data[i * 4 + 2] / 255.0; // B channel
+	}
+	return rgbData;
 }
 
 // Perform local object detection on an image URL
 async function runDetection(imageUrl) {
-	if (!compiledModel) {
-		throw new Error('LiteRT detector model is not initialized yet.');
-	}
-
+	const model = await getDetectorModel();
 	const startTime = performance.now();
-	// Fetch image as blob
-	const response = await fetch(imageUrl);
-	if (!response.ok) {
-		throw new Error(`Failed to fetch image for detection (HTTP ${response.status})`);
-	}
-	const blob = await response.blob();
+	let bitmap = null;
+	let inputTensor = null;
+	let hostOutputTensors = [];
 
-	// Load image into bitmap and draw onto OffscreenCanvas for resizing
-	const bitmap = await createImageBitmap(blob);
-	const width = 320;
-	const height = 320;
-	const canvas = new OffscreenCanvas(width, height);
-	const ctx = canvas.getContext('2d');
-	ctx.drawImage(bitmap, 0, 0, width, height);
-
-	// Extract RGB pixel data (ignore alpha channel)
-	const imgData = ctx.getImageData(0, 0, width, height);
-	const rgbData = new Uint8Array(width * height * 3);
-	let dstIdx = 0;
-	for (let srcIdx = 0; srcIdx < imgData.data.length; srcIdx += 4) {
-		rgbData[dstIdx++] = imgData.data[srcIdx];     // R
-		rgbData[dstIdx++] = imgData.data[srcIdx + 1]; // G
-		rgbData[dstIdx++] = imgData.data[srcIdx + 2]; // B
-	}
-
-	// Create input tensor [1, 320, 320, 3]
-	const inputTensor = new LiteRT.Tensor(rgbData, [1, height, width, 3]);
-
-	// Run inference
-	console.log('[iNat Enhancement Suite] Running on-device object detection...');
-	const results = await compiledModel.run(inputTensor);
-
-	// Retrieve outputs from WASM memory
-	// EfficientDet-Lite0 outputs:
-	// results[0]: detection boxes [1, 25, 4] or [1, 100, 4]
-	// results[1]: detection classes [1, 25] or [1, 100]
-	// results[2]: detection scores [1, 25] or [1, 100]
-	// results[3]: num detections [1]
-	const boxesTensor = await results[0].moveTo('wasm');
-	const classesTensor = await results[1].moveTo('wasm');
-	const scoresTensor = await results[2].moveTo('wasm');
-	const countTensor = await results[3].moveTo('wasm');
-
-	const boxes = boxesTensor.toTypedArray();     // Float32Array of ymin, xmin, ymax, xmax
-	const classes = classesTensor.toTypedArray(); // Float32Array/Int32Array of class IDs
-	const scores = scoresTensor.toTypedArray();   // Float32Array of confidence scores
-	const count = countTensor.toTypedArray()[0];   // Number of detections
-
-	const inferenceDuration = (performance.now() - startTime).toFixed(1);
-	console.log(`[iNat Enhancement Suite] Local inference complete in ${inferenceDuration}ms. Found ${count} candidate objects.`);
-
-	// Free up temporary output tensors
-	boxesTensor.delete();
-	classesTensor.delete();
-	scoresTensor.delete();
-	countTensor.delete();
-	inputTensor.delete();
-
-	// Scan detections for the highest confidence organism/subject box
-	let bestBox = null;
-	let maxScore = 0.25; // Minimum confidence threshold
-
-	for (let i = 0; i < count; i++) {
-		const score = scores[i];
-		if (score > maxScore) {
-			maxScore = score;
-			const baseBoxIdx = i * 4;
-			bestBox = {
-				ymin: boxes[baseBoxIdx],
-				xmin: boxes[baseBoxIdx + 1],
-				ymax: boxes[baseBoxIdx + 2],
-				xmax: boxes[baseBoxIdx + 3]
-			};
+	try {
+		// Fetch image as blob
+		const response = await fetch(imageUrl);
+		if (!response.ok) {
+			throw new Error(`Failed to fetch image for detection (HTTP ${response.status})`);
 		}
-	}
+		const blob = await response.blob();
 
-	if (bestBox) {
-		console.log(`[iNat Enhancement Suite] Detected target subject with confidence ${(maxScore * 100).toFixed(1)}% at:`, bestBox);
-	} else {
-		console.log('[iNat Enhancement Suite] No objects detected above the confidence threshold.');
-	}
+		const inputDetails = model.getInputDetails()[0];
+		const [, channels, height, width] = Array.from(inputDetails.shape); // BCHW
+		if (channels !== 3) {
+			throw new Error(`Unexpected object-localizer channel count: ${channels}`);
+		}
 
-	return bestBox;
+		bitmap = await createImageBitmap(blob);
+		
+		// Proportional letterboxing resize
+		const srcWidth = bitmap.width;
+		const srcHeight = bitmap.height;
+		const scale = Math.min(width / srcWidth, height / srcHeight);
+		const newWidth = Math.floor(srcWidth * scale);
+		const newHeight = Math.floor(srcHeight * scale);
+		const dx = Math.floor((width - newWidth) / 2);
+		const dy = Math.floor((height - newHeight) / 2);
+
+		const canvas = new OffscreenCanvas(width, height);
+		const ctx = canvas.getContext('2d', { willReadFrequently: true });
+		if (!ctx) throw new Error('Could not create an image canvas for smart crop.');
+		
+		// Fill background with black (standard padding color for YOLO/SSD models)
+		ctx.fillStyle = '#000000';
+		ctx.fillRect(0, 0, width, height);
+		ctx.drawImage(bitmap, dx, dy, newWidth, newHeight);
+
+		const imageData = ctx.getImageData(0, 0, width, height);
+		const rgbData = createPlanarRgbInput(imageData);
+		inputTensor = new LiteRT.Tensor(rgbData, [1, 3, height, width]);
+
+		console.log('[iNat Enhancement Suite] Running on-device object localization (YOLOv8n)...');
+		const results = await model.run(inputTensor);
+		if (!Array.isArray(results) || results.length !== 1) {
+			throw new Error(`Object localizer returned ${Array.isArray(results) ? results.length : 'non-array'} outputs instead of 1.`);
+		}
+
+		hostOutputTensors = await Promise.all(results.map(tensor => tensor.moveTo('wasm')));
+		const array = hostOutputTensors[0].toTypedArray();
+
+		const numClasses = 80;
+		const numBoxes = 756;
+		let bestBox = null;
+		let bestSpecificBox = null;
+		let maxScore = 0.25; // Confidence threshold
+		let maxSpecificScore = 0.25;
+
+		// Parse the output shape [1, 84, 756]
+		for (let b = 0; b < numBoxes; b++) {
+			let maxClassScore = -Infinity;
+			let maxClassId = -1;
+			for (let c = 0; c < numClasses; c++) {
+				const scoreIdx = (4 + c) * numBoxes + b;
+				const score = array[scoreIdx];
+				if (score > maxClassScore) {
+					maxClassScore = score;
+					maxClassId = c;
+				}
+			}
+
+			// Convert logit to confidence score
+			const confidence = 1 / (1 + Math.exp(-maxClassScore));
+			if (confidence > 0.25) {
+				const x_center = array[0 * numBoxes + b];
+				const y_center = array[1 * numBoxes + b];
+
+				// Filter out boxes whose centers lie outside the active region (inside the black padding)
+				const x_center_px = x_center * width;
+				const y_center_px = y_center * height;
+				if (x_center_px < dx || x_center_px >= dx + newWidth || y_center_px < dy || y_center_px >= dy + newHeight) {
+					continue;
+				}
+
+				const w = array[2 * numBoxes + b];
+				const h = array[3 * numBoxes + b];
+
+				// Map normalized bounds (relative to target square) back to original dimensions
+				const mapBackX = (val) => {
+					const valPixels = val * width;
+					const activePixels = valPixels - dx;
+					return Math.max(0, Math.min(1, activePixels / newWidth));
+				};
+				const mapBackY = (val) => {
+					const valPixels = val * height;
+					const activePixels = valPixels - dy;
+					return Math.max(0, Math.min(1, activePixels / newHeight));
+				};
+
+				const ymin = mapBackY(y_center - h / 2);
+				const xmin = mapBackX(x_center - w / 2);
+				const ymax = mapBackY(y_center + h / 2);
+				const xmax = mapBackX(x_center + w / 2);
+
+				if (xmax > xmin && ymax > ymin) {
+					const box = { ymin, xmin, ymax, xmax, score: confidence, classId: maxClassId, className: COCO_CLASSES[maxClassId] || 'subject' };
+					
+					if (confidence > maxScore) {
+						maxScore = confidence;
+						bestBox = box;
+					}
+
+					const isFullFrame = (xmax - xmin) > 0.85 && (ymax - ymin) > 0.85;
+					if (!isFullFrame && confidence > maxSpecificScore) {
+						maxSpecificScore = confidence;
+						bestSpecificBox = box;
+					}
+				}
+			}
+		}
+
+		if (bestBox && (bestBox.xmax - bestBox.xmin) > 0.85 && (bestBox.ymax - bestBox.ymin) > 0.85) {
+			if (bestSpecificBox) {
+				console.log(`[iNat Enhancement Suite] Overriding full-frame box (Class ${bestBox.classId}, ${(bestBox.score*100).toFixed(0)}%) with smaller localized subject (Class ${bestSpecificBox.classId}, ${(bestSpecificBox.score*100).toFixed(0)}%)`);
+				bestBox = bestSpecificBox;
+			}
+		}
+
+		const inferenceDuration = (performance.now() - startTime).toFixed(1);
+		if (bestBox) {
+			console.log(`[iNat Enhancement Suite] Localized target subject (class ${bestBox.classId}) with confidence ${(maxScore * 100).toFixed(1)}% at:`, bestBox);
+		} else {
+			console.log('[iNat Enhancement Suite] No clear foreground object was localized above the confidence threshold.');
+		}
+
+		return bestBox;
+	} finally {
+		for (const tensor of hostOutputTensors) {
+			if (tensor && !tensor.deleted) tensor.delete();
+		}
+		if (inputTensor && !inputTensor.deleted) inputTensor.delete();
+		if (bitmap) bitmap.close();
+	}
 }
 
 // Runtime message listener
@@ -155,7 +265,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 	if (request.action === 'detectSubject') {
 		runDetection(request.imageUrl)
 			.then(box => sendResponse({ success: true, box }))
-			.catch(error => sendResponse({ success: false, error: error.message }));
+			.catch(error => {
+				console.error('[iNat Enhancement Suite] Smart-crop inference failed:', error);
+				sendResponse({ success: false, error: error.message });
+			});
 		return true; // Keep channel open for async response
 	}
 });

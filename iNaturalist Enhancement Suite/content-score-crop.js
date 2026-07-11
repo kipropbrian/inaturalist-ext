@@ -356,6 +356,7 @@ chrome.storage.sync.get({
 						<img id="inat-crop-image" src="" alt="Crop preview">
 					</div>
 					<div class="inat-crop-footer">
+						<div class="inat-crop-smart-status" role="status" aria-live="polite"></div>
 						<div class="inat-crop-instructions">
 							Drag to reposition, scroll to zoom, drag corners to resize crop area
 						</div>
@@ -494,6 +495,38 @@ chrome.storage.sync.get({
 				color: #666;
 				margin-bottom: 12px;
 			}
+			.inat-crop-smart-status {
+				display: none;
+				padding: 8px 10px;
+				margin-bottom: 10px;
+				border: 1px solid transparent;
+				border-radius: 4px;
+				font-size: 12px;
+				line-height: 1.4;
+			}
+			.inat-crop-smart-status.visible {
+				display: block;
+			}
+			.inat-crop-smart-status.info {
+				color: #28536b;
+				background: #edf7fc;
+				border-color: #b9dbea;
+			}
+			.inat-crop-smart-status.success {
+				color: #416600;
+				background: #f0f7e8;
+				border-color: #c9dfa9;
+			}
+			.inat-crop-smart-status.warning {
+				color: #765500;
+				background: #fff8e1;
+				border-color: #ead38a;
+			}
+			.inat-crop-smart-status.error {
+				color: #8b2f2f;
+				background: #fff0f0;
+				border-color: #e4b4b4;
+			}
 			.inat-crop-toolbar {
 				display: flex;
 				gap: 4px;
@@ -613,10 +646,88 @@ chrome.storage.sync.get({
 	let cvResultsCache = null; // Cache for CV results, invalidated on crop change
 	let modalInitialized = false;
 	let detectedBox = null;
+	let currentCropImageUrl = null;
+	let detectionInProgress = false;
+	let smartCropRequestSequence = 0;
 	const scoreResultsCache = new Map(); // Cache CV results by observation, image, and metadata
 	let scoreResultsVisible = false;
 	let scoreRequestSequence = 0;
 	let currentObservationId = null;
+
+	function setSmartCropStatus(message, state = 'info') {
+		if (!modal) return;
+		const statusEl = modal.querySelector('.inat-crop-smart-status');
+		if (!statusEl) return;
+		statusEl.textContent = message || '';
+		statusEl.className = `inat-crop-smart-status${message ? ` visible ${state}` : ''}`;
+	}
+
+	function setSmartCropLoading(isLoading) {
+		if (!modal) return;
+		const autoCropBtn = modal.querySelector('.inat-crop-auto-crop');
+		if (!autoCropBtn) return;
+		autoCropBtn.textContent = isLoading ? '⏳' : '✨';
+		autoCropBtn.disabled = isLoading;
+		autoCropBtn.title = isLoading ? 'Smart Crop: Analyzing image...' : 'Smart Auto-Crop';
+	}
+
+	function requestSmartCrop(imageUrl, { applyOnSuccess = false } = {}) {
+		if (!imageUrl || detectionInProgress) return;
+
+		const requestId = ++smartCropRequestSequence;
+		detectionInProgress = true;
+		detectedBox = null;
+		modal.classList.remove('smart-crop-active');
+		setSmartCropLoading(true);
+		setSmartCropStatus('Finding the main subject in this photo…', 'info');
+
+		const timeoutId = window.setTimeout(() => {
+			if (requestId !== smartCropRequestSequence || imageUrl !== currentCropImageUrl) return;
+			smartCropRequestSequence++;
+			detectionInProgress = false;
+			setSmartCropLoading(false);
+			setSmartCropStatus('Smart crop took too long. You can crop manually or click ✨ to retry.', 'error');
+		}, 15000);
+
+		chrome.runtime.sendMessage({ action: 'detectSubject', imageUrl }, response => {
+			const runtimeError = chrome.runtime.lastError?.message;
+			if (requestId !== smartCropRequestSequence || imageUrl !== currentCropImageUrl) return;
+			window.clearTimeout(timeoutId);
+
+			detectionInProgress = false;
+			setSmartCropLoading(false);
+
+			if (runtimeError) {
+				logWarn('Smart auto-crop background request failed:', runtimeError);
+				setSmartCropStatus('Smart crop is temporarily unavailable. You can crop manually or click ✨ to retry.', 'error');
+				return;
+			}
+
+			if (response?.success && response.box) {
+				detectedBox = response.box;
+				const className = detectedBox.className || 'subject';
+				const confidence = Number.isFinite(detectedBox.score)
+					? ` (${Math.round(detectedBox.score * 100)}% confidence)`
+					: '';
+				log('Smart auto-crop found bounding box:', detectedBox);
+				if (applyOnSuccess && applyDetectedBox()) {
+					setSmartCropStatus(`Smart crop applied: localized ${className}${confidence}.`, 'success');
+				} else {
+					setSmartCropStatus(`Subject localized: ${className}${confidence}. Click ✨ to apply.`, 'success');
+				}
+				return;
+			}
+
+			if (!response?.success) {
+				logWarn('Smart auto-crop inference failed:', response?.error);
+				setSmartCropStatus('Smart crop could not analyze this photo. You can crop manually or click ✨ to retry.', 'error');
+				return;
+			}
+
+			logWarn('Smart auto-crop found no clear subject.');
+			setSmartCropStatus('No clear foreground subject was found. Adjust the crop manually or click ✨ to try again.', 'warning');
+		});
+	}
 
 	// Capture observation location from API responses. domContext.js intercepts
 	// iNaturalist's fetch calls and dispatches observationFetch with the location
@@ -668,9 +779,11 @@ chrome.storage.sync.get({
 				e.preventDefault();
 				e.stopPropagation();
 				if (detectedBox) {
-					applyDetectedBox();
-				} else {
-					alert('Smart Crop: No target subject was detected in this photo.');
+					if (applyDetectedBox()) {
+						setSmartCropStatus('Smart crop applied. You can still resize or reposition it manually.', 'success');
+					}
+				} else if (!detectionInProgress) {
+					requestSmartCrop(currentCropImageUrl, { applyOnSuccess: true });
 				}
 			});
 		}
@@ -703,12 +816,12 @@ chrome.storage.sync.get({
 	}
 
 	function applyDetectedBox() {
-		if (!cropper || !detectedBox) return;
+		if (!cropper || !detectedBox) return false;
 		const imageData = cropper.getImageData();
 		const imgWidth = imageData.naturalWidth;
 		const imgHeight = imageData.naturalHeight;
 
-		// EfficientDet-Lite0 outputs box as normalized [ymin, xmin, ymax, xmax]
+		// Mobile Object Localizer outputs normalized [ymin, xmin, ymax, xmax].
 		const { ymin, xmin, ymax, xmax } = detectedBox;
 
 		// Convert to pixel coordinates relative to the original image dimensions
@@ -725,6 +838,7 @@ chrome.storage.sync.get({
 		});
 		modal.classList.add('smart-crop-active');
 		log('Smart auto-crop bounding box applied:', { cropX, cropY, cropW, cropH });
+		return true;
 	}
 
 	function openCropModal(imageUrl) {
@@ -751,29 +865,8 @@ chrome.storage.sync.get({
 		// Show modal immediately
 		modal.classList.add('active');
 
-		// Set the smart auto-crop button to loading state
-		const autoCropBtn = modal.querySelector('.inat-crop-auto-crop');
-		if (autoCropBtn) {
-			autoCropBtn.textContent = '⏳';
-			autoCropBtn.disabled = true;
-			autoCropBtn.title = 'Smart Crop: Analyzing image...';
-		}
-
-		// Reset detectedBox for the new image and trigger detection in the background
-		detectedBox = null;
-		chrome.runtime.sendMessage({ action: 'detectSubject', imageUrl }, response => {
-			if (autoCropBtn) {
-				autoCropBtn.textContent = '✨';
-				autoCropBtn.disabled = false;
-				autoCropBtn.title = 'Smart Auto-Crop';
-			}
-			if (response?.success && response.box) {
-				detectedBox = response.box;
-				log('Smart auto-crop found bounding box:', detectedBox);
-			} else {
-				logWarn('Smart auto-crop detection failed or returned no subjects:', response?.error);
-			}
-		});
+		currentCropImageUrl = imageUrl;
+		requestSmartCrop(imageUrl, { applyOnSuccess: true });
 
 		// Initialize cropper when image is ready
 		function initCropper() {
@@ -795,6 +888,16 @@ chrome.storage.sync.get({
 				// Prevent Cropper from re-fetching (we're using a data URL)
 				checkCrossOrigin: false,
 				checkOrientation: false,
+				ready: function() {
+					if (detectedBox) {
+						applyDetectedBox();
+						const className = detectedBox.className || 'subject';
+						const confidence = Number.isFinite(detectedBox.score)
+							? ` (${Math.round(detectedBox.score * 100)}% confidence)`
+							: '';
+						setSmartCropStatus(`Smart crop applied: localized ${className}${confidence}.`, 'success');
+					}
+				},
 				// Invalidate CV cache when crop area changes
 				cropend: function() {
 					cvResultsCache = null;
@@ -816,8 +919,8 @@ chrome.storage.sync.get({
 			.catch(error => {
 				logError('Failed to fetch image:', error);
 				loadingEl.classList.remove('active');
-				alert('Failed to load image: ' + error.message);
-				closeCropModal();
+				cropImage.classList.remove('loading');
+				setSmartCropStatus('This photo could not be loaded for cropping. Close this window and try again.', 'error');
 			});
 	}
 
@@ -826,6 +929,12 @@ chrome.storage.sync.get({
 			modal.classList.remove('active');
 			modal.classList.remove('smart-crop-active');
 		}
+		smartCropRequestSequence++;
+		detectionInProgress = false;
+		detectedBox = null;
+		currentCropImageUrl = null;
+		setSmartCropLoading(false);
+		setSmartCropStatus('');
 		// Clear the CV results cache
 		cvResultsCache = null;
 		if (cropper) {

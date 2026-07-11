@@ -1,0 +1,12 @@
+{
+  "name": "inaturalist-ext",
+  "version": "1.0.0",
+  "description": "iNaturalist Enhancement Suite Extension",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/run_tests.js"
+  },
+  "dependencies": {
+    "jpeg-js": "^0.4.4"
+  }
+}

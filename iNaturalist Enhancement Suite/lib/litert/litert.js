@@ -167,6 +167,9 @@ var LiteRT = (() => {
   ]);
   function getDataType(val) {
     for (const dataTypeMapping of DATATYPES) {
+      if (val === 0) {
+        val = 1; // Map ElementType.NONE (0) to FLOAT32 (1)
+      }
       if (dataTypeMapping.dtype === val || dataTypeMapping.typedArrayConstructor === val || val instanceof dataTypeMapping.typedArrayConstructor || dataTypeMapping.elementType === val) {
         return dataTypeMapping;
       }
