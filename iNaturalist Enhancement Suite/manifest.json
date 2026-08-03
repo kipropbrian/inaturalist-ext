@@ -13,10 +13,12 @@
   },
   "permissions": [
     "storage",
+    "alarms",
     "unlimitedStorage"
   ],
   "host_permissions": [
-    "https://*.inaturalist.org/*"
+    "https://*.inaturalist.org/*",
+    "http://127.0.0.1:8765/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -71,6 +73,7 @@
         "cache.js",
         "arrive-2.4.1.min.js",
         "cropper.min.js",
+        "crop-dataset.js",
         "content-observation.js",
         "content-score-crop.js",
         "content-identify-similar.js",
@@ -122,6 +125,20 @@
         "content-taxa.js"
       ],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.inaturalist.org/home*"
+      ],
+      "css": [
+        "updates-filter.css"
+      ],
+      "js": [
+        "logging.js",
+        "cache.js",
+        "content-updates.js"
+      ],
+      "run_at": "document_idle"
     },
     {
       "matches": [

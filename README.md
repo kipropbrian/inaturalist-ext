@@ -8,7 +8,8 @@ settings in `chrome.storage.sync`. It does not require a build step.
 
 ## Features
 
-- **AI-Powered Smart Auto-Crop:** Run on-device, aspect-ratio preserving subject localization using a customized **YOLOv8-nano** model via **LiteRT.js** (WebAssembly) to size and center the crop box around the main foreground subject automatically upon opening. Includes inline detection status, detected class name feedback (e.g. "mouse" or "bird"), and a sparkles (**✨**) button to re-apply or trigger.
+- **AI-Powered Smart Auto-Crop:** Run on-device subject localization through **LiteRT.js** (WebAssembly), with a crop-modal selector for the legacy COCO YOLOv8n model, MegaDetector V6 Compact, U²-NetP saliency, and an arthropod-specific YOLO11n model.
+- **Passive crop dataset:** Save metadata and one user-approved normalized box—never image bytes—to extension-local storage shared across content scripts and the review page. The options page opens a dashboard with progress toward 500 verified examples, correction/rejection tools, active-learning priorities, JSON backup/import, and COCO/YOLO export.
 - **Image Gallery / Photos Tab:** View observation photos in a structured, interactive image gallery tab.
 - **Quick Add Plant Button:** Add flora identifications quickly with a "Quick Plant" action button next to the taxon input field.
 - **Similar Species Selection Buttons:** Add selection and identify buttons directly onto similar species list items/cards.
@@ -55,6 +56,9 @@ the same page.
 iNaturalist Enhancement Suite/
 ├── manifest.json
 ├── background.js
+├── detector-postprocess.js
+├── crop-dataset.js
+├── dataset.html / dataset.js / dataset.css
 ├── options.html
 ├── options.js
 ├── domContext.js
@@ -71,13 +75,17 @@ iNaturalist Enhancement Suite/
     └── litert/
         ├── litert.js
         └── models/
-        │   └── yolov8n.tflite
+        │   ├── yolov8n.tflite
+        │   ├── megadetector-v6-compact.tflite
+        │   ├── arthropod-yolo11n.tflite
+        │   └── u2netp-saliency.tflite
         └── wasm/
             ├── litert_wasm_internal.js
             └── litert_wasm_internal.wasm (etc.)
 ```
 
-- `background.js` handles cross-origin image requests and executes local on-device machine learning inference (LiteRT.js with YOLOv8-nano) inside the extension service worker context.
+- `background.js` handles cross-origin image requests and executes selectable local inference inside the extension service worker.
+- `crop-dataset.js` owns the versioned, metadata-only `chrome.storage.local` annotation store; `dataset.*` implements review and export.
 - `domContext.js` runs in the page's main JavaScript world. It bridges
   operations that need iNaturalist's page context to isolated content scripts
   through custom DOM events.
@@ -94,14 +102,14 @@ iNaturalist Enhancement Suite/
 
 ## Model Technical Notes
 
-The extension's smart-cropping relies on a customized `192x192` **YOLOv8-nano** model executing on Chrome's WebAssembly CPU backend.
+The default is the unchanged legacy `192x192` COCO **YOLOv8n** path. Three additional browser-verified adapters are available: MegaDetector V6 Compact (`640x640`, YOLOv10 end-to-end rows), Arthropod YOLO11n (`640x640`, raw one-class detections), and U²-NetP (`320x320`, largest saliency component to one box). Model hashes, sources, licenses, and tensor contracts live beside each artifact and in [MODEL_INTEGRATION.md](MODEL_INTEGRATION.md).
 
 ### Why other models failed:
 1. **EfficientDet-Lite0:** This raw model has `19,206` raw boxes. It does not contain a post-processing operator graph. The JS runtime was written expecting a post-processed model with 4 output tensors (`boxes`, `classes`, `scores`, `num_detections`), leading to raw buffer parsing failures and browser crashes.
 2. **Mobile Object Localizer V1:** This model contains a dynamic C++ custom operator (`TFLite_Detection_PostProcess`). The browser's WebAssembly runtime failed to lock/unlock dynamically sized memory buffers allocated by this custom operator inside service workers (`Failed to unlock buffer`), crashing with type `NONE` (`0`).
 
-### YOLOv8-nano Solution:
-To achieve robust performance and compatibility, we compiled YOLOv8-nano (`imgsz=192`) down to standard TFLite/LiteRT tensors.
+### Legacy YOLOv8n path:
+The existing YOLOv8n (`imgsz=192`) uses standard TFLite/LiteRT tensors.
 * **Aspect-Ratio Preserved Letterboxing:** Drawing non-square images directly to a square input squashed and distorted target organisms, preventing accurate localization. We scale images proportionally to fit the `192x192` square and draw them centered on black padding.
 * **Active-Region Coordinate Mapping:** We filter out false detections centering in the black padding zones, map the coordinates back relative to the active image space, and normalize them to the original image dimensions.
 * **Model Limits:** Because the model is trained on the general COCO 80-class dataset, it does not natively understand specific insect or plant species (e.g. a grasshopper is often classified as a `bird` or `potted plant`). We use class-agnostic confidence scores for localization and display what the model mapped the subject to (e.g., `localized bird (50% confidence)`) on the UI.
@@ -116,6 +124,15 @@ To execute the automated checks:
 npm test
 ```
 This runs `node tests/run_tests.js`, which decodes, letterboxes, runs YOLOv8-nano inference on each image, and asserts that the resulting class IDs and bounding box coordinates match expected thresholds.
+
+To compile and sample-infer all three additional bundled models with the exact extension runtime:
+
+```bash
+npm run test:models
+```
+
+The separate metadata/training repository is at
+`/Users/brian/Developer/MRI/projects/inaturalist-crop-dataset`.
 
 ### Syntax & Lint Checks:
 You can also run syntax and manifest checks for changed files:

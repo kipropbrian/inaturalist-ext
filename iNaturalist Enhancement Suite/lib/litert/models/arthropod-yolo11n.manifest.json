@@ -1,0 +1,25 @@
+{
+  "id": "arthropod-yolo11n",
+  "display_name": "Arthropod YOLO11n (ArthroNat + FlatBug)",
+  "intended_use": "personal educational crop localization",
+  "source_repository": "https://huggingface.co/edgaremy/arthropod-detector",
+  "source_artifact_url": "https://huggingface.co/edgaremy/arthropod-detector/resolve/main/yolo11n_ArthroNat%2Bflatbug.pt",
+  "source_artifact_sha256": "222e6b89863d42a7014cf408c74c6da9cd5b7a65bf62c690dd786ae708634580",
+  "source_artifact_bytes": 5454170,
+  "license_provenance": [
+    { "source": "model card", "spdx": "MIT" },
+    { "source": "Ultralytics model metadata", "spdx": "AGPL-3.0" }
+  ],
+  "export_tool": "ultralytics",
+  "export_tool_version": "8.4.92",
+  "export_command": "yolo export model=yolo11n_ArthroNat-flatbug.pt format=tflite imgsz=640 batch=1 nms=False",
+  "export_artifact_sha256": "32094b6a85106f50fe18746c4fcbca857ee336f46a1722d6825824292a2e0028",
+  "export_artifact_bytes": 10626645,
+  "input": { "dtype": "float32", "layout": "BCHW", "shape": [1, 3, 640, 640], "range": [0, 1] },
+  "outputs": [{ "name": "output_0", "dtype": "float32", "shape": [1, 5, 8400], "semantics": "normalized_xywh_plus_probability" }],
+  "labels": ["Arthropod"],
+  "preprocess": { "resize": "letterbox", "pad_value": 0 },
+  "postprocess": { "decoder": "raw_yolo_probability", "threshold": 0.25, "nms_iou": null },
+  "verified_runtime": { "accelerator": "wasm", "compile_and_zero_inference": true },
+  "verified_at": "2026-07-19"
+}

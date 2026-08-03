@@ -198,6 +198,26 @@ chrome.storage.sync.get({
 			.inat-crop-results-list .result-rank em {
 				font-style: italic;
 			}
+			.inat-crop-results-list .genus-species-badge {
+				display: inline-flex;
+				align-items: center;
+				background-color: #e8f5e9;
+				color: #2e7d32;
+				font-size: 10px;
+				font-weight: bold;
+				padding: 2px 6px;
+				border-radius: 10px;
+				margin-left: 6px;
+				vertical-align: middle;
+				line-height: 1;
+				border: 1px solid #c8e6c9;
+			}
+			.inat-crop-results-list .genus-species-icon {
+				width: 10px;
+				height: 10px;
+				margin-right: 3px;
+				flex-shrink: 0;
+			}
 			.inat-crop-results-list .result-tags {
 				display: inline;
 				font-size: 11px;
@@ -357,11 +377,16 @@ chrome.storage.sync.get({
 					</div>
 					<div class="inat-crop-footer">
 						<div class="inat-crop-smart-status" role="status" aria-live="polite"></div>
+						<label class="inat-crop-model-picker">
+							<span>Crop model</span>
+							<select class="inat-crop-model-select" aria-label="Crop model"></select>
+						</label>
 						<div class="inat-crop-instructions">
 							Drag to reposition, scroll to zoom, drag corners to resize crop area
 						</div>
 						<div class="inat-crop-buttons">
 							<button class="inat-crop-btn inat-crop-cancel">Cancel</button>
+							<button class="inat-crop-btn inat-crop-save-dataset inat-btn-outlined">Save to dataset</button>
 							<button class="inat-crop-btn inat-crop-submit inat-btn-${buttonColor}">Get CV Suggestions</button>
 						</div>
 					</div>
@@ -443,6 +468,7 @@ chrome.storage.sync.get({
 				color: #333;
 			}
 			.inat-crop-body {
+				position: relative;
 				padding: 16px;
 				max-height: 60vh;
 				overflow: hidden;
@@ -635,6 +661,22 @@ chrome.storage.sync.get({
 				opacity: 0.5;
 				background: #f5f5f5 !important;
 			}
+			.inat-crop-model-picker {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				font-size: 12px;
+				color: #555;
+				margin-bottom: 10px;
+			}
+			.inat-crop-model-select {
+				max-width: 300px;
+				padding: 5px 8px;
+				border: 1px solid #bbb;
+				border-radius: 3px;
+				background: #fff;
+				font-size: 12px;
+			}
 		`;
 		document.head.appendChild(styles);
 		document.body.appendChild(modal);
@@ -643,16 +685,100 @@ chrome.storage.sync.get({
 
 	let modal = null;
 	let cropper = null;
+	let cropperReady = false;
 	let cvResultsCache = null; // Cache for CV results, invalidated on crop change
 	let modalInitialized = false;
 	let detectedBox = null;
+	let appliedModelBox = null;
+	let appliedModelId = null;
+	const cropModelRuns = new Map();
+	let cropDatasetSaved = false;
+	let datasetSaveInProgress = false;
 	let currentCropImageUrl = null;
+	let currentCropDetectionSource = null;
+	let cropModalLoadSequence = 0;
 	let detectionInProgress = false;
 	let smartCropRequestSequence = 0;
 	const scoreResultsCache = new Map(); // Cache CV results by observation, image, and metadata
 	let scoreResultsVisible = false;
 	let scoreRequestSequence = 0;
 	let currentObservationId = null;
+	let lastObservation = null;
+	const CROP_MODEL_STORAGE_KEY = 'cropDetectorModel';
+	const CROP_MODELS = Object.freeze([
+		{ id: 'yolov8n-coco-legacy', name: 'YOLOv8n (current COCO model)', available: true, version: 'bundled' },
+		{ id: 'megadetector-v6-compact', name: 'MegaDetector V6 Compact', available: true, version: 'mdv6-yolov10-c-99038c4e' },
+		{ id: 'u2netp-saliency', name: 'U²-NetP saliency', available: true, version: 'official-ac7e1c8-106b8c4e' },
+		{ id: 'arthropod-yolo11n', name: 'Arthropod YOLO11n', available: true, version: 'flatbug-32094b6a' }
+	]);
+	function extensionContextAvailable() {
+		try { return typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id); }
+		catch (_) { return false; }
+	}
+	function extensionVersion() {
+		try { return chrome.runtime.getManifest().version; }
+		catch (_) { return null; }
+	}
+	let selectedCropModel = CROP_MODELS[0];
+	chrome.storage.local.get(CROP_MODEL_STORAGE_KEY, stored => {
+		const model = CROP_MODELS.find(candidate => candidate.id === stored?.[CROP_MODEL_STORAGE_KEY] && candidate.available);
+		if (model) selectedCropModel = model;
+		const select = modal?.querySelector('.inat-crop-model-select');
+		if (select) select.value = selectedCropModel.id;
+	});
+
+	function initializeCropModelPicker() {
+		const select = modal?.querySelector('.inat-crop-model-select');
+		if (!select) return;
+		select.replaceChildren(...CROP_MODELS.map(model => {
+			const option = document.createElement('option');
+			option.value = model.id;
+			option.textContent = model.name;
+			option.disabled = !model.available;
+			return option;
+		}));
+		select.value = selectedCropModel.id;
+		select.addEventListener('change', () => {
+			const model = CROP_MODELS.find(candidate => candidate.id === select.value && candidate.available) || CROP_MODELS[0];
+			selectedCropModel = model;
+			select.value = model.id;
+			if (!extensionContextAvailable()) {
+				setSmartCropStatus('The extension was reloaded. Refresh this iNaturalist tab before continuing.', 'error');
+				return;
+			}
+			chrome.storage.local.set({ [CROP_MODEL_STORAGE_KEY]: model.id });
+			smartCropRequestSequence++;
+			detectionInProgress = false;
+			setSmartCropLoading(false);
+			detectedBox = null;
+			appliedModelBox = null;
+			appliedModelId = null;
+			modal.classList.remove('smart-crop-active');
+			markCropDatasetUnsaved();
+			setSmartCropStatus(`Running ${model.name}…`, 'info');
+			requestSmartCrop(currentCropImageUrl, { applyOnSuccess: true });
+		});
+	}
+
+	function markCropDatasetUnsaved() {
+		cropDatasetSaved = false;
+		const button = modal?.querySelector('.inat-crop-save-dataset');
+		if (!button) return;
+		if (datasetSaveInProgress) return;
+		button.textContent = 'Save to dataset';
+		button.disabled = !cropperReady || detectionInProgress;
+	}
+
+	function rememberModelRun(model, details) {
+		cropModelRuns.set(model.id, {
+			model_id: model.id,
+			model_name: model.name,
+			model_version: model.version || null,
+			run_at: new Date().toISOString(),
+			...details
+		});
+		markCropDatasetUnsaved();
+	}
 
 	function setSmartCropStatus(message, state = 'info') {
 		if (!modal) return;
@@ -669,11 +795,23 @@ chrome.storage.sync.get({
 		autoCropBtn.textContent = isLoading ? '⏳' : '✨';
 		autoCropBtn.disabled = isLoading;
 		autoCropBtn.title = isLoading ? 'Smart Crop: Analyzing image...' : 'Smart Auto-Crop';
+		const saveButton = modal.querySelector('.inat-crop-save-dataset');
+		if (saveButton && !cropDatasetSaved) saveButton.disabled = isLoading || !cropperReady;
 	}
 
 	function requestSmartCrop(imageUrl, { applyOnSuccess = false } = {}) {
 		if (!imageUrl || detectionInProgress) return;
+		if (!cropperReady) {
+			setSmartCropStatus('Waiting for the photo and crop box to finish loading…', 'info');
+			return;
+		}
+		if (!extensionContextAvailable()) {
+			setSmartCropStatus('The extension was reloaded. Refresh this iNaturalist tab before continuing.', 'error');
+			return;
+		}
 
+		const requestedModel = selectedCropModel;
+		const requestStartedAt = performance.now();
 		const requestId = ++smartCropRequestSequence;
 		detectionInProgress = true;
 		detectedBox = null;
@@ -681,15 +819,18 @@ chrome.storage.sync.get({
 		setSmartCropLoading(true);
 		setSmartCropStatus('Finding the main subject in this photo…', 'info');
 
+		const timeoutMs = requestedModel.id === 'yolov8n-coco-legacy' ? 15000 : 60000;
 		const timeoutId = window.setTimeout(() => {
 			if (requestId !== smartCropRequestSequence || imageUrl !== currentCropImageUrl) return;
 			smartCropRequestSequence++;
 			detectionInProgress = false;
 			setSmartCropLoading(false);
+			rememberModelRun(requestedModel, { status: 'timeout', box: null, error: 'Inference timed out', duration_ms: timeoutMs });
 			setSmartCropStatus('Smart crop took too long. You can crop manually or click ✨ to retry.', 'error');
-		}, 15000);
+		}, timeoutMs);
 
-		chrome.runtime.sendMessage({ action: 'detectSubject', imageUrl }, response => {
+		try {
+			chrome.runtime.sendMessage({ action: 'detectSubject', imageUrl: currentCropDetectionSource || imageUrl, modelId: requestedModel.id }, response => {
 			const runtimeError = chrome.runtime.lastError?.message;
 			if (requestId !== smartCropRequestSequence || imageUrl !== currentCropImageUrl) return;
 			window.clearTimeout(timeoutId);
@@ -699,12 +840,23 @@ chrome.storage.sync.get({
 
 			if (runtimeError) {
 				logWarn('Smart auto-crop background request failed:', runtimeError);
+				rememberModelRun(requestedModel, { status: 'failed', box: null, error: runtimeError, duration_ms: performance.now() - requestStartedAt });
 				setSmartCropStatus('Smart crop is temporarily unavailable. You can crop manually or click ✨ to retry.', 'error');
 				return;
 			}
 
 			if (response?.success && response.box) {
 				detectedBox = response.box;
+				rememberModelRun(requestedModel, {
+					status: 'detected',
+					box: { xmin: detectedBox.xmin, ymin: detectedBox.ymin, xmax: detectedBox.xmax, ymax: detectedBox.ymax },
+					score: Number.isFinite(detectedBox.score) ? detectedBox.score : null,
+					class_id: detectedBox.classId ?? null,
+					class_name: detectedBox.className || null,
+					duration_ms: performance.now() - requestStartedAt,
+					pipeline_duration_ms: Number.isFinite(response.pipelineDurationMs) ? response.pipelineDurationMs : null,
+					timing_breakdown: response.timingBreakdown || null
+				});
 				const className = detectedBox.className || 'subject';
 				const confidence = Number.isFinite(detectedBox.score)
 					? ` (${Math.round(detectedBox.score * 100)}% confidence)`
@@ -720,13 +872,27 @@ chrome.storage.sync.get({
 
 			if (!response?.success) {
 				logWarn('Smart auto-crop inference failed:', response?.error);
+				rememberModelRun(requestedModel, { status: 'failed', box: null, error: response?.error || 'Inference failed', duration_ms: performance.now() - requestStartedAt });
 				setSmartCropStatus('Smart crop could not analyze this photo. You can crop manually or click ✨ to retry.', 'error');
 				return;
 			}
 
 			logWarn('Smart auto-crop found no clear subject.');
-			setSmartCropStatus('No clear foreground subject was found. Adjust the crop manually or click ✨ to try again.', 'warning');
-		});
+			rememberModelRun(requestedModel, {
+				status: 'no_detection', box: null, error: null,
+				duration_ms: performance.now() - requestStartedAt,
+				pipeline_duration_ms: Number.isFinite(response.pipelineDurationMs) ? response.pipelineDurationMs : null,
+				timing_breakdown: response.timingBreakdown || null
+			});
+				setSmartCropStatus('No clear foreground subject was found. Adjust the crop manually or click ✨ to try again.', 'warning');
+			});
+		} catch (error) {
+			window.clearTimeout(timeoutId);
+			detectionInProgress = false;
+			setSmartCropLoading(false);
+			setSmartCropStatus('The extension was reloaded. Refresh this iNaturalist tab before continuing.', 'error');
+			logWarn('Smart crop request could not start:', error.message);
+		}
 	}
 
 	// Capture observation location from API responses. domContext.js intercepts
@@ -736,6 +902,7 @@ chrome.storage.sync.get({
 	let lastObservationLocation = null;
 	document.addEventListener('observationFetch', (event) => {
 		const observation = event.detail?.observation;
+		lastObservation = observation || lastObservation;
 		const nextObservationId = observation?.id == null ? null : String(observation.id);
 		if (nextObservationId && nextObservationId !== currentObservationId) {
 			currentObservationId = nextObservationId;
@@ -754,22 +921,37 @@ chrome.storage.sync.get({
 
 		if (!modalInitialized) {
 			modalInitialized = true;
+			initializeCropModelPicker();
 
 			// Event listeners
 			modal.querySelector('.inat-crop-close').addEventListener('click', closeCropModal);
 			modal.querySelector('.inat-crop-cancel').addEventListener('click', closeCropModal);
 			modal.querySelector('.inat-crop-overlay').addEventListener('click', closeCropModal);
 			modal.querySelector('.inat-crop-submit').addEventListener('click', handleCrop);
+			modal.querySelector('.inat-crop-save-dataset').addEventListener('click', () => {
+				saveCropToDataset().catch(error => {
+					logWarn('Could not save crop annotation:', error);
+					datasetSaveInProgress = false;
+					markCropDatasetUnsaved();
+					setSmartCropStatus(`Could not save to dataset: ${error.message}`, 'error');
+				});
+			});
 			modal.querySelector('.inat-crop-rotate-left').addEventListener('click', () => {
 				if (cropper) {
 					cropper.rotate(-90);
+					appliedModelBox = null;
+					appliedModelId = null;
 					cvResultsCache = null;
+					markCropDatasetUnsaved();
 				}
 			});
 			modal.querySelector('.inat-crop-rotate-right').addEventListener('click', () => {
 				if (cropper) {
 					cropper.rotate(90);
+					appliedModelBox = null;
+					appliedModelId = null;
 					cvResultsCache = null;
+					markCropDatasetUnsaved();
 				}
 			});
 			modal.querySelector('.inat-crop-results-close').addEventListener('click', () => {
@@ -836,6 +1018,13 @@ chrome.storage.sync.get({
 			width: cropW,
 			height: cropH
 		});
+		appliedModelBox = {
+			xmin: detectedBox.xmin,
+			ymin: detectedBox.ymin,
+			xmax: detectedBox.xmax,
+			ymax: detectedBox.ymax
+		};
+		appliedModelId = selectedCropModel.id;
 		modal.classList.add('smart-crop-active');
 		log('Smart auto-crop bounding box applied:', { cropX, cropY, cropW, cropH });
 		return true;
@@ -843,6 +1032,8 @@ chrome.storage.sync.get({
 
 	function openCropModal(imageUrl) {
 		ensureModalExists();
+		const loadId = ++cropModalLoadSequence;
+		const displayImageUrl = imageUrl.replace(/\/original\./, '/medium.');
 
 		const cropImage = modal.querySelector('#inat-crop-image');
 		const loadingEl = modal.querySelector('.inat-crop-loading');
@@ -861,15 +1052,29 @@ chrome.storage.sync.get({
 			cropper.destroy();
 			cropper = null;
 		}
+		cropperReady = false;
+		const autoCropButton = modal.querySelector('.inat-crop-auto-crop');
+		if (autoCropButton) {
+			autoCropButton.disabled = true;
+			autoCropButton.title = 'Waiting for the photo to load';
+		}
 
 		// Show modal immediately
 		modal.classList.add('active');
 
 		currentCropImageUrl = imageUrl;
-		requestSmartCrop(imageUrl, { applyOnSuccess: true });
+		currentCropDetectionSource = null;
+		appliedModelBox = null;
+		appliedModelId = null;
+		cropModelRuns.clear();
+		markCropDatasetUnsaved();
+		setSmartCropStatus('Loading the photo before running crop detection…', 'info');
 
 		// Initialize cropper when image is ready
 		function initCropper() {
+			if (loadId !== cropModalLoadSequence || currentCropImageUrl !== imageUrl || !modal.classList.contains('active')) return;
+			cropImage.onload = null;
+			cropImage.onerror = null;
 			loadingEl.classList.remove('active');
 			cropImage.classList.remove('loading');
 
@@ -889,42 +1094,62 @@ chrome.storage.sync.get({
 				checkCrossOrigin: false,
 				checkOrientation: false,
 				ready: function() {
-					if (detectedBox) {
-						applyDetectedBox();
-						const className = detectedBox.className || 'subject';
-						const confidence = Number.isFinite(detectedBox.score)
-							? ` (${Math.round(detectedBox.score * 100)}% confidence)`
-							: '';
-						setSmartCropStatus(`Smart crop applied: localized ${className}${confidence}.`, 'success');
-					}
+					if (loadId !== cropModalLoadSequence || currentCropImageUrl !== imageUrl) return;
+					cropperReady = true;
+					markCropDatasetUnsaved();
+					requestSmartCrop(imageUrl, { applyOnSuccess: true });
 				},
 				// Invalidate CV cache when crop area changes
 				cropend: function() {
 					cvResultsCache = null;
+					markCropDatasetUnsaved();
 					log('Crop changed, cache invalidated');
 				},
 				// Clear smart-crop-active class if the user adjusts the crop box manually
 				cropstart: function() {
+					appliedModelBox = null;
+					appliedModelId = null;
 					modal.classList.remove('smart-crop-active');
 				}
 			});
 		}
 
-		// Fetch image via background script (bypasses CORS)
-		fetchImageViaBackground(imageUrl)
-			.then(dataUrl => {
-				cropImage.onload = initCropper;
-				cropImage.src = dataUrl;
-			})
-			.catch(error => {
-				logError('Failed to fetch image:', error);
-				loadingEl.classList.remove('active');
-				cropImage.classList.remove('loading');
-				setSmartCropStatus('This photo could not be loaded for cropping. Close this window and try again.', 'error');
-			});
+		function showLoadFailure(error, attempt) {
+			if (loadId !== cropModalLoadSequence || currentCropImageUrl !== imageUrl) return;
+			imageCache.delete(displayImageUrl);
+			if (attempt < 1) {
+				setSmartCropStatus('The photo did not load cleanly. Retrying once…', 'warning');
+				window.setTimeout(() => loadCropImage(attempt + 1), 250);
+				return;
+			}
+			logError('Failed to fetch image:', error);
+			loadingEl.classList.remove('active');
+			cropImage.classList.remove('loading');
+			setSmartCropStatus('This photo could not be loaded. Close this dialog and try again; no detector work was started.', 'error');
+		}
+
+		function loadCropImage(attempt = 0) {
+			fetchImageViaBackground(displayImageUrl)
+				.then(dataUrl => {
+					if (loadId !== cropModalLoadSequence || currentCropImageUrl !== imageUrl || !modal.classList.contains('active')) return;
+					currentCropDetectionSource = dataUrl;
+					cropImage.onload = initCropper;
+					cropImage.onerror = () => showLoadFailure(new Error('The browser could not decode the photo'), attempt);
+					cropImage.removeAttribute('src');
+					cropImage.src = dataUrl;
+				})
+				.catch(error => showLoadFailure(error, attempt));
+		}
+
+		// Use iNaturalist's bounded medium rendition for the roughly 500px editor.
+		// Some S3 large/original renditions stall while medium remains responsive.
+		// Crop coordinates
+		// remain normalized, while avoiding huge original-image data URLs.
+		loadCropImage();
 	}
 
 	function closeCropModal() {
+		cropModalLoadSequence++;
 		if (modal) {
 			modal.classList.remove('active');
 			modal.classList.remove('smart-crop-active');
@@ -932,7 +1157,16 @@ chrome.storage.sync.get({
 		smartCropRequestSequence++;
 		detectionInProgress = false;
 		detectedBox = null;
+		appliedModelBox = null;
+		appliedModelId = null;
+		cropModelRuns.clear();
+		cropDatasetSaved = false;
+		datasetSaveInProgress = false;
+		cropperReady = false;
 		currentCropImageUrl = null;
+		currentCropDetectionSource = null;
+		const cropImage = modal?.querySelector('#inat-crop-image');
+		if (cropImage) { cropImage.onload = null; cropImage.onerror = null; }
 		setSmartCropLoading(false);
 		setSmartCropStatus('');
 		// Clear the CV results cache
@@ -1159,6 +1393,12 @@ chrome.storage.sync.get({
 	function handleCrop() {
 		if (!cropper) return;
 
+		// Asking for CV suggestions records and fully benchmarks the current crop
+		// for later review, but never verifies it automatically.
+		saveCropToDataset({ autoVerify: false, generateAllModels: true, updateSaveButton: false }).catch(error => {
+			logWarn('Could not save pending crop annotation:', error);
+		});
+
 		// Get cropped canvas
 		const canvas = cropper.getCroppedCanvas({
 			maxWidth: 1024,
@@ -1227,12 +1467,132 @@ chrome.storage.sync.get({
 		})();
 	}
 
+	function photoIdFromUrl(url) {
+		const match = String(url || '').match(/\/photos\/(\d+)\//);
+		return match ? match[1] : null;
+	}
+
+	function matchingObservationPhoto(imageUrl) {
+		const photoId = photoIdFromUrl(imageUrl);
+		return (lastObservation?.photos || []).find(photo => String(photo.id) === String(photoId)) || null;
+	}
+
+	async function saveCropToDataset({ autoVerify = true, updateSaveButton = true } = {}) {
+		if (!window.iNatCropDataset || !cropper || !currentCropImageUrl || !cropperReady) {
+			throw new Error('The crop is still loading. Wait for the image and crop box to appear, then try again.');
+		}
+		datasetSaveInProgress = true;
+		const saveButton = modal?.querySelector('.inat-crop-save-dataset');
+		if (saveButton) {
+			saveButton.disabled = true;
+			if (updateSaveButton) saveButton.textContent = 'Saving…';
+		}
+		const imageData = cropper.getImageData();
+		const cropData = cropper.getData(false);
+		if (!imageData || !Number.isFinite(imageData.naturalWidth) || !Number.isFinite(imageData.naturalHeight) || !cropData) {
+			datasetSaveInProgress = false;
+			cropperReady = false;
+			if (saveButton) {
+				saveButton.disabled = true;
+				saveButton.textContent = 'Crop still loading…';
+			}
+			throw new Error('The crop box is not ready yet. Wait a moment and try again.');
+		}
+		const unchangedModelBox = appliedModelId === selectedCropModel.id ? appliedModelBox : null;
+		const finalBox = window.iNatCropDataset.finalBoxForSave(
+			cropData,
+			imageData.naturalWidth,
+			imageData.naturalHeight,
+			unchangedModelBox
+		);
+		const photo = matchingObservationPhoto(currentCropImageUrl);
+		const taxon = lastObservation?.taxon || null;
+		const originalWidth = Math.round(Number(photo?.original_dimensions?.width) || imageData.naturalWidth);
+		const originalHeight = Math.round(Number(photo?.original_dimensions?.height) || imageData.naturalHeight);
+		const photoId = photo?.id == null ? photoIdFromUrl(currentCropImageUrl) : String(photo.id);
+		const observationId = lastObservation?.id == null ? currentObservationId : String(lastObservation.id);
+		const annotationId = `${observationId || 'unknown'}:${photoId || currentCropImageUrl}`;
+		const existing = window.iNatCropDataset.get ? await window.iNatCropDataset.get(annotationId) : null;
+		for (const run of existing?.model_runs || []) {
+			if (!cropModelRuns.has(run.model_id) && Number.isFinite(run.duration_ms)) cropModelRuns.set(run.model_id, run);
+		}
+		const draft = {
+			annotation_id: annotationId,
+			photo_id: photoId,
+			observation_id: observationId,
+			photo_url: currentCropImageUrl,
+			license_code: photo?.license_code || lastObservation?.license_code || null,
+			license_url: photo?.license_url || null,
+			attribution: photo?.attribution || null,
+			taxon_id: taxon?.id == null ? existing?.taxon_id ?? null : String(taxon.id),
+			taxon_name: taxon?.name || existing?.taxon_name || null,
+			taxon_common_name: taxon?.preferred_common_name || existing?.taxon_common_name || null,
+			taxon_rank: taxon?.rank || existing?.taxon_rank || null,
+			iconic_taxon: taxon?.iconic_taxon_name || existing?.iconic_taxon || null,
+			original_width: originalWidth,
+			original_height: originalHeight,
+			rotation_degrees: ((Number(cropData.rotate ?? imageData.rotate) || 0) % 360 + 360) % 360,
+			active_model_at_save: selectedCropModel.id,
+			benchmark_environment: {
+				extension_version: extensionVersion(),
+				platform: navigator.userAgentData?.platform || navigator.platform || null,
+				hardware_concurrency: Number.isFinite(navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : null,
+				device_memory_gb: Number.isFinite(navigator.deviceMemory) ? navigator.deviceMemory : null,
+				measured_at: new Date().toISOString()
+			},
+			final_box: finalBox,
+			final_box_source: 'visible_human_crop',
+			auto_verify_requested: autoVerify,
+			created_at: existing?.created_at || new Date().toISOString()
+		};
+		if (!extensionContextAvailable()) {
+			datasetSaveInProgress = false;
+			throw new Error('The extension was reloaded. Refresh this iNaturalist tab before saving.');
+		}
+		const response = await new Promise((resolve, reject) => {
+			try {
+				chrome.runtime.sendMessage({
+					action: 'enqueueCropDatasetJob',
+					payload: { draft, model_runs: [...cropModelRuns.values()] }
+				}, result => {
+					const runtimeError = chrome.runtime.lastError?.message;
+					if (runtimeError) reject(new Error(runtimeError));
+					else if (!result?.success) reject(new Error(result?.error || 'The background save could not be queued'));
+					else resolve(result);
+				});
+			} catch (_) {
+				reject(new Error('The extension was reloaded. Refresh this iNaturalist tab before saving.'));
+			}
+		});
+		datasetSaveInProgress = false;
+		cropDatasetSaved = true;
+		if (saveButton) {
+			saveButton.disabled = false;
+		}
+		if (saveButton && updateSaveButton) saveButton.textContent = 'Queued in background ✓';
+		if (updateSaveButton) {
+			setSmartCropStatus('Background save started. You can safely close this dialog or the iNaturalist tab; the remaining detectors and synchronization will continue.', 'success');
+		} else {
+			setSmartCropStatus('Crop queued as pending. Background detector checks will continue while you review suggestions.', 'warning');
+		}
+		log('Crop annotation queued for background save:', response.annotationId, response.jobId);
+	}
+
 	// Display CV results in the list (styled like iNaturalist's autocomplete)
 	function displayCVResults(data, listEl, onClose) {
-		if (!data.results || data.results.length === 0) {
+		// Filter out results below 10%
+		const filteredResults = (data.results || []).filter(result => result.combined_score >= 10);
+
+		if (filteredResults.length === 0 && !data.common_ancestor) {
 			listEl.innerHTML = '<li class="section-header">No suggestions found</li>';
 			return;
 		}
+
+		// Update data reference so subsequent code (including populateTaxonHierarchies and click handlers) uses the filtered list
+		data = {
+			...data,
+			results: filteredResults
+		};
 
 		// Detect the user's name display preference from iNat's own rendered elements.
 		// iNat's SplitTaxon component puts `display-name` on whichever name is primary.
@@ -1247,24 +1607,27 @@ chrome.storage.sync.get({
 			: 'common first';
 		log('Name display preference:', nameStyle);
 
-		function formatTaxonName(commonName, scientificName, rankName, taxonId) {
+		function formatTaxonName(commonName, scientificName, rankName, taxonId, rank) {
 			const open = `<a class="result-taxon-link" href="https://www.inaturalist.org/taxa/${taxonId}" target="_blank" rel="noopener" onclick="event.stopPropagation();">`;
 			const close = '</a>';
+			const isGenus = rank === 'genus';
+			const placeholder = isGenus ? `<span class="genus-species-count-holder" data-genus-id="${taxonId}"></span>` : '';
+
 			if (nameStyle === 'scientific only' || !commonName) {
 				return `
 					<div class="result-name">${open}<em>${scientificName}</em>${close}</div>
-					<div class="result-rank">${rankName}</div>
+					<div class="result-rank">${rankName}${placeholder}</div>
 				`;
 			}
 			if (nameStyle === 'scientific first') {
 				return `
 					<div class="result-name">${open}<em>${scientificName}</em>${close}</div>
-					<div class="result-rank">${commonName}</div>
+					<div class="result-rank">${commonName}${placeholder}</div>
 				`;
 			}
 			return `
 				<div class="result-name">${open}${commonName}${close}</div>
-				<div class="result-rank">${open}<em>${scientificName}</em>${close}</div>
+				<div class="result-rank">${open}<em>${scientificName}</em>${close}${placeholder}</div>
 			`;
 		}
 
@@ -1286,7 +1649,7 @@ chrome.storage.sync.get({
 					<div class="result-border" style="background: #74ac00;"></div>
 					${photoUrl ? `<a href="https://www.inaturalist.org/taxa/${ancestor.id}" target="_blank" rel="noopener" onclick="event.stopPropagation();"><img class="result-photo" src="${photoUrl}" alt=""></a>` : '<div class="result-photo"></div>'}
 					<div class="result-info">
-						${formatTaxonName(commonName, scientificName, rankName, ancestor.id)}
+						${formatTaxonName(commonName, scientificName, rankName, ancestor.id, ancestor.rank)}
 						<div class="result-hierarchy" data-taxon-id="${ancestor.id}"><span class="result-hierarchy-loading">Loading hierarchy...</span></div>
 					</div>
 					${ancestorScore ? `<span class="result-score">${ancestorScore.toFixed(1)}%</span>` : ''}
@@ -1295,7 +1658,9 @@ chrome.storage.sync.get({
 		}
 
 		// Section header for top suggestions
-		html += '<li class="section-header">Here are our top suggestions:</li>';
+		if (data.results.length > 0) {
+			html += '<li class="section-header">Here are our top suggestions:</li>';
+		}
 
 		// Show top 10 results
 		const results = data.results.slice(0, 10);
@@ -1322,7 +1687,7 @@ chrome.storage.sync.get({
 					<div class="result-border" style="background: hsl(${hue}, 50%, 50%);"></div>
 					${photoUrl ? `<a href="https://www.inaturalist.org/taxa/${taxon.id}" target="_blank" rel="noopener" onclick="event.stopPropagation();"><img class="result-photo" src="${photoUrl}" alt=""></a>` : '<div class="result-photo"></div>'}
 					<div class="result-info">
-						${formatTaxonName(commonName, scientificName, rankName, taxon.id)}
+						${formatTaxonName(commonName, scientificName, rankName, taxon.id, taxon.rank)}
 						${tagsHtml}
 						<div class="result-hierarchy" data-taxon-id="${taxon.id}"><span class="result-hierarchy-loading">Loading hierarchy...</span></div>
 					</div>
@@ -1435,6 +1800,56 @@ chrome.storage.sync.get({
 				ancestorRow.style.background = 'linear-gradient(to right, #74ac00, white 90%)';
 			}
 		});
+
+		fetchAndPopulateGenusSpeciesCounts(listEl);
+	}
+
+	async function getGenusSpeciesCount(genusId) {
+		let taxon = taxonHierarchyCache.get(String(genusId));
+		if (!taxon || !Array.isArray(taxon.children)) {
+			try {
+				const fullTaxa = await fetchTaxaByIds([Number(genusId)]);
+				if (fullTaxa && fullTaxa.length) {
+					taxon = fullTaxa[0];
+				}
+			} catch (error) {
+				logError(`Failed to fetch taxon details for genus ${genusId}:`, error);
+			}
+		}
+
+		if (!taxon || !Array.isArray(taxon.children)) {
+			return null;
+		}
+
+		// Count only direct children that are species
+		return taxon.children.filter(c => c.rank === 'species').length;
+	}
+
+	async function fetchAndPopulateGenusSpeciesCounts(listEl) {
+		const placeholders = listEl.querySelectorAll('.genus-species-count-holder');
+		if (!placeholders.length) return;
+
+		for (const el of placeholders) {
+			const genusId = el.dataset.genusId;
+			if (!genusId) continue;
+
+			try {
+				const count = await getGenusSpeciesCount(genusId);
+				if (count !== null && el.isConnected) {
+					// Render a small number icon indicator with a beautiful leaf SVG
+					el.innerHTML = `
+						<span class="genus-species-badge" title="${count} species in this genus">
+							<svg viewBox="0 0 24 24" class="genus-species-icon">
+								<path fill="currentColor" d="M17,2C17,2 9,3 6,8C3,13 4.5,18.5 7.5,20.5C9.5,21.5 12,21.5 14,20.5C18.5,17.5 21,11 21,11C21,11 18,11 15,13.5C12,16 11,17 9.5,17C8,17 7.5,15.5 8.5,13.5C10.5,9.5 17,2 17,2Z"/>
+							</svg>
+							${count} sp
+						</span>
+					`;
+				}
+			} catch (err) {
+				logWarn(`Failed to fetch species count for genus ${genusId}:`, err);
+			}
+		}
 	}
 
 	async function populateTaxonHierarchies(data, listEl) {
@@ -1675,9 +2090,10 @@ chrome.storage.sync.get({
 
 		for (const selector of selectors) {
 			const img = document.querySelector(selector);
-			if (img && img.src) {
+			const source = img?.currentSrc || img?.src || '';
+			if (img?.complete && img.naturalWidth > 0 && /^https:\/\//.test(source)) {
 				// Convert to original.jpg for highest resolution
-				return img.src.replace(/\/(square|small|medium|large)\./, '/original.');
+				return source.replace(/\/(square|small|medium|large)\./, '/original.');
 			}
 		}
 		return null;
@@ -1686,6 +2102,14 @@ chrome.storage.sync.get({
 	// Cache for prefetched images (URL -> data URL)
 	const imageCache = new Map();
 	const pendingFetches = new Map();
+	const MAX_CACHED_IMAGES = 6;
+	function cacheImage(url, dataUrl) {
+		imageCache.delete(url);
+		imageCache.set(url, dataUrl);
+		while (imageCache.size > MAX_CACHED_IMAGES) {
+			imageCache.delete(imageCache.keys().next().value);
+		}
+	}
 
 	// Fetch image via background script (bypasses CORS)
 	function fetchImageViaBackground(url) {
@@ -1704,7 +2128,7 @@ chrome.storage.sync.get({
 				if (!chrome.runtime?.id) throw new Error('Extension context invalidated. Refresh the page.');
 				const response = await chrome.runtime.sendMessage({ action: 'fetchImage', url });
 				if (!response?.success) throw new Error(response?.error || 'Image fetch failed');
-				imageCache.set(url, response.dataUrl);
+				cacheImage(url, response.dataUrl);
 				return response.dataUrl;
 			} finally {
 				pendingFetches.delete(url);
@@ -1713,55 +2137,6 @@ chrome.storage.sync.get({
 
 		pendingFetches.set(url, promise);
 		return promise;
-	}
-
-	// Get all gallery image URLs (as original.jpg)
-	function getGalleryImageUrls() {
-		const urls = [];
-		const images = document.querySelectorAll('.image-gallery-thumbnail img, .image-gallery-slide img');
-		const seen = new Set();
-
-		images.forEach(img => {
-			if (img.src) {
-				const originalUrl = img.src.replace(/\/(square|small|medium|large)\./, '/original.');
-				if (!seen.has(originalUrl)) {
-					seen.add(originalUrl);
-					urls.push(originalUrl);
-				}
-			}
-		});
-
-		return urls;
-	}
-
-	// Prefetch all gallery images in order
-	let prefetchInProgress = false;
-	function prefetchGalleryImages() {
-		// Skip if already prefetching, but allow new prefetch calls after completion
-		if (prefetchInProgress) return;
-
-		const urls = getGalleryImageUrls();
-		// Filter to only URLs not already cached
-		const urlsToFetch = urls.filter(url => !imageCache.has(url));
-
-		if (urlsToFetch.length === 0) {
-			log('All gallery images already cached');
-			return;
-		}
-
-		prefetchInProgress = true;
-		log(`Prefetching ${urlsToFetch.length} gallery images`);
-
-		// Fetch sequentially to avoid overwhelming the network
-		urlsToFetch.reduce((chain, url) => {
-			return chain.then(() => {
-				return fetchImageViaBackground(url).catch(err => {
-					logWarn('Failed to prefetch:', url, err);
-				});
-			});
-		}, Promise.resolve()).finally(() => {
-			prefetchInProgress = false;
-		});
 	}
 
 	// Check if user is logged in by looking for API token
@@ -1916,18 +2291,23 @@ chrome.storage.sync.get({
 			return;
 		}
 
-		// Close modals on arrow key navigation and prefetch new images
+		// Close modals on arrow key navigation. Images load only when requested so
+		// gallery navigation cannot compete with the crop dialog.
 		document.addEventListener('keydown', (e) => {
 			if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
 				closeScoreResults();
 				closeCropModal();
 				// Prefetch new observation's images after a short delay
-				setTimeout(() => prefetchGalleryImages(), 500);
 			}
 		});
 
 		// Capture phase so we run before iNaturalist's own modal Escape handlers.
 		document.addEventListener('keydown', handleEscapeKey, true);
+		// Enable Crop only after the currently displayed iNaturalist image itself
+		// has decoded. Other page images and background requests are irrelevant.
+		document.addEventListener('load', event => {
+			if (event.target instanceof HTMLImageElement && event.target.closest('.obs-media, .image-gallery, .PhotoBrowser, .ObservationMedia')) updateButtonState();
+		}, true);
 
 		// Wait for the gallery/photo elements to load, then add our buttons
 		const selectors = ['.image-gallery', '.PhotoBrowser', '.ObservationMedia'];
@@ -1935,7 +2315,6 @@ chrome.storage.sync.get({
 			document.arrive(selector, { existing: true }, function() {
 				setTimeout(() => {
 					addScoreAndCropButtons();
-					prefetchGalleryImages();
 				}, 100);
 			});
 		}
@@ -1962,7 +2341,6 @@ chrome.storage.sync.get({
 				repositioning = true;
 				setTimeout(() => {
 					addScoreAndCropButtons();
-					prefetchGalleryImages();
 					repositioning = false;
 				}, 100);
 			}).observe(obsMedia, { childList: true });

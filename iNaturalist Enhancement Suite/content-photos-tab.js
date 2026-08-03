@@ -6,8 +6,10 @@
 		if (chrome.runtime.lastError || !settings || !settings.enableTaxonPhotosTab) return;
 
 		let currentTaxon = null;
+		let currentObservationId = null;
 		let currentPlaceId = 97392; // Default to Africa (place_id: 97392)
 		let currentQualityGrade = ''; // Default to Any
+		let currentIdentifiedByMe = false;
 		let currentTabActive = false;
 		let currentPage = 1;
 		let isLoading = false;
@@ -20,6 +22,7 @@
 			const obs = event.detail.observation;
 			if (!obs) return;
 
+			currentObservationId = obs.id || null;
 			const taxon = obs.taxon;
 			
 			// We only show the tab for Order level or below (rank_level <= 40)
@@ -95,24 +98,32 @@
 			// 2. Inject Tab Panel
 			let panel = document.getElementById('inat-taxon-photos-panel');
 			if (!panel) {
+				const currentUserId = getCurrentUserId();
 				panel = document.createElement('div');
 				panel.id = 'inat-taxon-photos-panel';
 				panel.className = 'inat-tab taxon-photos-tab';
 				panel.innerHTML = `
 					<div class="taxon-photos-header">
 						<h3 class="taxon-name-title">Taxon Photos</h3>
-						<p class="taxon-photos-desc" style="margin-bottom: 6px;">Observations of this taxon from iNaturalist.</p>
-						<a href="" target="_blank" rel="noopener" class="taxon-photos-browse-link" style="display: inline-block; font-size: 11px; font-weight: bold; color: #74ac00; text-decoration: none; margin-bottom: 12px;">Browse photos on iNaturalist &raquo;</a>
-						<div class="taxon-photos-controls" style="display: flex; flex-direction: column; gap: 8px; border-top: 1px solid rgba(0, 0, 0, 0.05); padding-top: 8px;">
-							<label for="taxon-photos-africa-chk" style="display: flex; align-items: center; gap: 6px; font-weight: normal; margin: 0; cursor: pointer; font-size: 13px;">
-								<input type="checkbox" id="taxon-photos-africa-chk" checked>
-								<span>Filter by Africa</span>
-							</label>
-							<label for="taxon-photos-quality-select" style="display: flex; align-items: center; gap: 6px; font-weight: normal; margin: 0; cursor: pointer; font-size: 13px;">
-								<span>Quality:</span>
-								<select id="taxon-photos-quality-select" style="padding: 2px 4px; font-size: 12px; border: 1px solid #ccc; border-radius: 3px; background: #fff; cursor: pointer;">
+						<p class="taxon-photos-desc">Observations of this taxon from iNaturalist.</p>
+						<a href="" target="_blank" rel="noopener" class="taxon-photos-browse-link">Browse photos on iNaturalist &raquo;</a>
+						<div class="taxon-photos-controls">
+							<div class="taxon-photos-toggle-list">
+								<label for="taxon-photos-africa-chk" class="taxon-photos-toggle">
+									<input type="checkbox" id="taxon-photos-africa-chk" checked>
+									<span>Photos from Africa</span>
+								</label>
+								<label for="taxon-photos-my-ids-chk" class="taxon-photos-toggle taxon-photos-my-ids-label" title="Show observations in this taxon or its descendants where you have an active identification">
+									<input type="checkbox" id="taxon-photos-my-ids-chk" ${currentUserId ? '' : 'disabled'}>
+									<span>${currentUserId ? 'Identified by me' : 'My identifications (log in required)'}</span>
+								</label>
+							</div>
+							<label for="taxon-photos-quality-select" class="taxon-photos-quality-control">
+								<span>Quality grade</span>
+								<select id="taxon-photos-quality-select">
 									<option value="">Any</option>
 									<option value="research">Research Grade</option>
+									<option value="needs_id">Needs ID</option>
 								</select>
 							</label>
 						</div>
@@ -135,6 +146,13 @@
 				// Africa checkbox event
 				panel.querySelector('#taxon-photos-africa-chk').addEventListener('change', e => {
 					currentPlaceId = e.target.checked ? 97392 : null;
+					resetPhotos();
+					loadPhotos();
+				});
+
+				// Current user's active identifications checkbox event
+				panel.querySelector('#taxon-photos-my-ids-chk').addEventListener('change', e => {
+					currentIdentifiedByMe = e.target.checked;
 					resetPhotos();
 					loadPhotos();
 				});
@@ -321,25 +339,42 @@
 			photosCtrl = new AbortController();
 
 			try {
-				let url = `https://api.inaturalist.org/v1/observations?taxon_id=${currentTaxon.id}&photos=true&per_page=12&page=${currentPage}&only_id=false`;
+				const params = new URLSearchParams({
+					taxon_id: String(currentTaxon.id),
+					photos: 'true',
+					per_page: '12',
+					page: String(currentPage),
+					only_id: 'false'
+				});
 				if (currentPlaceId) {
-					url += `&place_id=${currentPlaceId}`;
+					params.set('place_id', String(currentPlaceId));
 				}
 				if (currentQualityGrade) {
-					url += `&quality_grade=${currentQualityGrade}`;
+					params.set('quality_grade', currentQualityGrade);
 				}
+				if (currentIdentifiedByMe) {
+					const currentUserId = getCurrentUserId();
+					if (!currentUserId) {
+						throw new Error('Log in to iNaturalist to filter by your identifications');
+					}
+					params.set('ident_user_id', currentUserId);
+				}
+				const url = `https://api.inaturalist.org/v1/observations?${params}`;
 
 				const res = await fetch(url, { signal: photosCtrl.signal });
 				if (!res.ok) throw new Error(`API returned HTTP ${res.status}`);
 
 				const data = await res.json();
 				const observations = data.results || [];
+				const comparisonObservations = observations.filter(obs => (
+					String(obs.id) !== String(currentObservationId)
+				));
 
-				if (currentPage === 1 && observations.length === 0) {
+				if (currentPage === 1 && comparisonObservations.length === 0) {
 					renderEmptyState(grid);
 					hasMore = false;
 				} else {
-					renderPhotoGrid(grid, observations);
+					renderPhotoGrid(grid, comparisonObservations);
 					// If we pulled fewer observations than per_page (12), there are no more next pages
 					hasMore = observations.length === 12;
 				}
@@ -390,9 +425,13 @@
 
 		function renderEmptyState(grid) {
 			if (!grid) return;
-			const msg = currentPlaceId
-				? `<strong>No photos found in Africa</strong>Try unchecking the "Filter by Africa" checkbox above to view photos globally.`
-				: `<strong>No photos found</strong>There are no observations with photos for this taxon.`;
+			let detail = 'There are no observations with photos for this taxon.';
+			if (currentIdentifiedByMe || currentQualityGrade) {
+				detail = 'No observations match the selected identification and quality filters.';
+			} else if (currentPlaceId) {
+				detail = 'Try unchecking "Filter by Africa" to view photos globally.';
+			}
+			const msg = `<strong>No matching photos found</strong>${detail}`;
 
 			grid.innerHTML = `<li style="grid-column: span 3;"><div class="taxon-photos-empty">${msg}</div></li>`;
 		}
@@ -442,6 +481,23 @@
 		function getMediumPhotoUrl(url) {
 			if (!url) return '';
 			return url.replace(/\/(square|small|thumb|large|original)\./i, '/medium.');
+		}
+
+		function getCurrentUserId() {
+			const token = document.querySelector('meta[name="inaturalist-api-token"]')?.content;
+			if (!token) return '';
+
+			try {
+				const payloadPart = token.split('.')[1];
+				if (!payloadPart) return '';
+				const normalized = payloadPart.replace(/-/g, '+').replace(/_/g, '/');
+				const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+				const payload = JSON.parse(atob(padded));
+				return payload && payload.user_id ? String(payload.user_id) : '';
+			} catch (error) {
+				console.warn('[iNat Enhancement] Could not determine the logged-in user for Taxon Photos:', error);
+				return '';
+			}
 		}
 
 		// Simple HTML escape helper

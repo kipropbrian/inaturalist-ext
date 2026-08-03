@@ -17,7 +17,8 @@
 		'inat-taxon-': 30 * 24 * 60 * 60 * 1000,      // 30 days
 		'inat-userstats-': 1 * 24 * 60 * 60 * 1000,   // 1 day
 		'inat-taxacount-': 1 * 24 * 60 * 60 * 1000,   // 1 day
-		'inat-similar-': 7 * 24 * 60 * 60 * 1000      // 7 days
+		'inat-similar-': 7 * 24 * 60 * 60 * 1000,     // 7 days
+		'inat-updates-': 1 * 60 * 60 * 1000           // 1 hour
 	};
 
 	function getTtlForKey(key) {

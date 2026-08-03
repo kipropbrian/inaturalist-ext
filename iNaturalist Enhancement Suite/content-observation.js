@@ -721,9 +721,9 @@ chrome.storage.sync.get({
 	// Quick-add taxon definitions: photoUrl, label, taxon id, colour accent
 	const QUICK_ADD_TAXA = [
 		{
-			photoUrl: 'https://static.inaturalist.org/photos/221143410/square.jpeg',
-			label: 'Plant',
-			taxon: { id: 47126, name: 'Plantae', preferred_common_name: 'Plants', rank: 'kingdom', iconic_taxon_name: 'Plantae' },
+			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/301768574/square.jpg',
+			label: 'Vascular Plants',
+			taxon: { id: 211194, name: 'Tracheophyta', preferred_common_name: 'Vascular Plants', rank: 'phylum', iconic_taxon_name: 'Plantae' },
 			accent: { bg: '#f0f7e6', border: '#a4d257', hoverBg: '#e2f0cc', hoverBorder: '#7db53a', text: '#3d6b00' }
 		},
 		{
@@ -737,6 +737,24 @@ chrome.storage.sync.get({
 			label: 'Lepidoptera',
 			taxon: { id: 47157, name: 'Lepidoptera', preferred_common_name: 'Butterflies and Moths', rank: 'order', iconic_taxon_name: 'Insecta' },
 			accent: { bg: '#f5f0fc', border: '#c9a8f5', hoverBg: '#ece0fb', hoverBorder: '#a97ee0', text: '#5a2d91' }
+		},
+		{
+			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/145526721/square.jpg',
+			label: 'Diptera',
+			taxon: { id: 47822, name: 'Diptera', preferred_common_name: 'Flies', rank: 'order', iconic_taxon_name: 'Insecta' },
+			accent: { bg: '#edf5f8', border: '#8bb8c7', hoverBg: '#dcecf1', hoverBorder: '#5e98aa', text: '#285d6d' }
+		},
+		{
+			photoUrl: 'https://static.inaturalist.org/photos/250916813/square.jpg',
+			label: 'Grasshoppers & Locusts',
+			taxon: { id: 47650, name: 'Acridoidea', preferred_common_name: 'Short-horned Grasshoppers and Locusts', rank: 'superfamily', iconic_taxon_name: 'Insecta' },
+			accent: { bg: '#f5f5df', border: '#b6b75e', hoverBg: '#ebebc8', hoverBorder: '#92943b', text: '#565816' }
+		},
+		{
+			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/6993855/square.jpg',
+			label: 'Mushrooms & Puffballs',
+			taxon: { id: 50814, name: 'Agaricomycetes', preferred_common_name: 'Mushrooms, Bracket Fungi, Puffballs, and Allies', rank: 'class', iconic_taxon_name: 'Fungi' },
+			accent: { bg: '#f7f1e8', border: '#c8a77b', hoverBg: '#efe3d3', hoverBorder: '#a98250', text: '#65451f' }
 		}
 	];
 

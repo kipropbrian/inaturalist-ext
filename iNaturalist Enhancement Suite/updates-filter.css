@@ -1,0 +1,99 @@
+#inat-update-filter {
+	margin: 0 0 16px;
+	padding: 12px 14px;
+	border: 1px solid #d2e3ab;
+	border-radius: 6px;
+	background: linear-gradient(135deg, #fbfdf8 0%, #f4f8ec 100%);
+	color: #333;
+	font-size: 13px;
+}
+
+.inat-update-filter-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px 12px;
+}
+
+.inat-update-filter-row label {
+	margin: 0;
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: #666;
+}
+
+#inat-update-filter-mode {
+	height: 34px;
+	min-width: 230px;
+	padding: 0 30px 0 10px;
+	border: 1px solid #b9c994;
+	border-radius: 4px;
+	background-color: #fff;
+	color: #333;
+	font: inherit;
+}
+
+#inat-update-filter-mode:focus {
+	outline: none;
+	border-color: #74ac00;
+	box-shadow: 0 0 0 3px rgba(116, 172, 0, 0.15);
+}
+
+#inat-update-filter-status {
+	color: #557600;
+	font-weight: 600;
+}
+
+#inat-update-filter p {
+	margin: 7px 0 0;
+	color: #6b7280;
+	font-size: 11.5px;
+	line-height: 1.4;
+}
+
+#updates_target.inat-update-filter-active > ul.timeline > li:not([data-inat-update-ready="true"]),
+#updates_target > ul.timeline > li.inat-update-hidden {
+	display: none !important;
+}
+
+.inat-update-signals {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	margin-left: 8px;
+	vertical-align: 1px;
+}
+
+.inat-update-signal {
+	display: inline-block;
+	padding: 2px 7px;
+	border-radius: 10px;
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1.3;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+
+.inat-update-signal--comment {
+	background: #e7f2ff;
+	color: #1769aa;
+}
+
+.inat-update-signal--disagreement {
+	background: #fff0e5;
+	color: #b54708;
+}
+
+@media (max-width: 640px) {
+	.inat-update-filter-row {
+		align-items: stretch;
+		flex-direction: column;
+	}
+
+	#inat-update-filter-mode {
+		width: 100%;
+	}
+}

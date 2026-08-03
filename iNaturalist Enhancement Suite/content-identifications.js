@@ -1,6 +1,40 @@
 (function () {
 	'use strict';
 
+	function parseTaxonQuery(value) {
+		const raw = String(value || '').trim();
+		const exclude = raw.startsWith('!');
+		return {
+			exclude,
+			query: exclude ? raw.slice(1).trimStart() : raw
+		};
+	}
+
+	function applyTaxonFilter(params, taxon) {
+		if (!taxon || !taxon.id) return;
+		params.set(taxon.exclude ? 'without_taxon_id' : 'taxon_id', taxon.id);
+	}
+
+	function findExactTaxon(taxa, query) {
+		const needle = String(query || '').trim().toLocaleLowerCase();
+		if (!needle) return null;
+		const comparable = value => {
+			const normalized = String(value || '').trim().toLocaleLowerCase();
+			return new Set([normalized, normalized.length > 3 && normalized.endsWith('s') ? normalized.slice(0, -1) : normalized]);
+		};
+		const needles = comparable(needle);
+		return (taxa || []).find(taxon => [taxon.name, taxon.preferred_common_name]
+			.some(name => [...comparable(name)].some(candidate => needles.has(candidate)))) || null;
+	}
+
+	if (globalThis.__INAT_IDENTIFICATIONS_TEST__) {
+		globalThis.__INAT_IDENTIFICATIONS_TEST__.helpers = {
+			parseTaxonQuery,
+			applyTaxonFilter,
+			findExactTaxon
+		};
+	}
+
 	chrome.storage.sync.get({ enableIdentificationExplorer: true }, function (settings) {
 		if (chrome.runtime.lastError) {
 			console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
@@ -16,7 +50,7 @@
 
 		let searchCtrl    = null;
 		let acCtrl        = null;
-		let selectedTaxon = null; // { id, name, commonName } — set by autocomplete selection
+		let selectedTaxon = null; // { id, name, commonName, exclude } — set by autocomplete selection
 		let debounce      = null;
 		let currentPage   = 1;
 		const pageSize    = 10;
@@ -62,7 +96,7 @@
 							<div class="inat-id-field inat-id-field--taxon">
 								<label for="inat-id-query">Taxon</label>
 								<div class="inat-id-ac-wrap">
-									<input id="inat-id-query" type="text" placeholder="e.g. Woodlice, Fungi, Hawk…" autocomplete="off" spellcheck="false">
+									<input id="inat-id-query" type="text" placeholder="Taxon, or !Taxon to exclude" autocomplete="off" spellcheck="false">
 									<ul id="inat-id-ac" role="listbox" hidden></ul>
 								</div>
 							</div>
@@ -128,7 +162,7 @@
 			input.addEventListener('input', () => {
 				selectedTaxon = null;
 				clearTimeout(debounce);
-				const q = input.value.trim();
+				const q = parseTaxonQuery(input.value).query;
 				if (q.length < 2) { acList.hidden = true; return; }
 				debounce = setTimeout(() => fetchAC(q), 280);
 			});
@@ -230,8 +264,9 @@
 			acList.querySelectorAll('li').forEach(li => {
 				li.addEventListener('mousedown', e => e.preventDefault()); // keep focus on input
 				li.addEventListener('click', () => {
-					selectedTaxon = { id: li.dataset.id, name: li.dataset.name, commonName: li.dataset.common };
-					input.value = li.dataset.common || li.dataset.name;
+					const { exclude } = parseTaxonQuery(input.value);
+					selectedTaxon = { id: li.dataset.id, name: li.dataset.name, commonName: li.dataset.common, exclude };
+					input.value = `${exclude ? '!' : ''}${li.dataset.common || li.dataset.name}`;
 					acList.hidden = true;
 				});
 			});
@@ -241,6 +276,7 @@
 
 		async function runSearch(page = 1, preserveResults = false) {
 			const query       = document.getElementById('inat-id-query').value.trim();
+			const parsedQuery = parseTaxonQuery(query);
 			const category    = document.getElementById('inat-id-category').value;
 			const quality     = document.getElementById('inat-id-quality').value;
 			const order       = document.getElementById('inat-id-sort').value;
@@ -251,10 +287,13 @@
 				return;
 			}
 
-			// Warn if user typed but didn't pick from autocomplete — taxon_name doesn't work on this API
 			if (query && !selectedTaxon) {
-				setStatus('⚠ Please select a taxon from the suggestions for accurate results.', 'warn');
-				return;
+				setStatus('Finding taxon…', 'loading');
+				selectedTaxon = await resolveExactTaxon(parsedQuery.query, parsedQuery.exclude);
+				if (!selectedTaxon) {
+					setStatus('⚠ Please select a taxon from the suggestions for accurate results.', 'warn');
+					return;
+				}
 			}
 
 			if (searchCtrl) searchCtrl.abort();
@@ -274,7 +313,7 @@
 					order_by: 'created_at'
 				});
 
-				if (selectedTaxon) params.set('taxon_id', selectedTaxon.id);
+				applyTaxonFilter(params, selectedTaxon);
 				if (category) params.set('category', category);
 				if (quality) params.set('quality_grade', quality);
 				if (currentOnly) params.set('current', 'true');
@@ -297,6 +336,26 @@
 				if (err.name === 'AbortError') return;
 				setStatus(`Search failed: ${err.message}`, 'error');
 				setPaginationDisabled(false);
+			}
+		}
+
+		async function resolveExactTaxon(query, exclude) {
+			if (!query) return null;
+			try {
+				const params = new URLSearchParams({ q: query, per_page: 10, is_active: true });
+				const res = await fetch(`${API_BASE}/taxa?${params}`);
+				if (!res.ok) return null;
+				const taxon = findExactTaxon((await res.json()).results, query);
+				if (!taxon) return null;
+				return {
+					id: String(taxon.id),
+					name: taxon.name || '',
+					commonName: taxon.preferred_common_name || '',
+					exclude
+				};
+			} catch (err) {
+				console.error('[iNat Enhancement Suite] Failed to resolve taxon:', err);
+				return null;
 			}
 		}
 

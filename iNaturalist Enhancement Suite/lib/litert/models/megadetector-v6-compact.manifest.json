@@ -1,0 +1,22 @@
+{
+  "id": "megadetector-v6-compact",
+  "display_name": "MegaDetector V6 Compact",
+  "intended_use": "personal educational wildlife crop localization",
+  "source_repository": "https://github.com/agentmorris/MegaDetector",
+  "source_artifact_url": "https://zenodo.org/records/15398270/files/MDV6-yolov10-c.pt?download=1",
+  "source_artifact_sha256": "21ee78a2d4887128e2a4920937d3295b493f44d788d13e1a635378c16dd74ef7",
+  "source_artifact_bytes": 5752051,
+  "source_license_spdx": "AGPL-3.0",
+  "export_tool": "ultralytics",
+  "export_tool_version": "8.4.92",
+  "export_command": "yolo export model=MDV6-yolov10-c.pt format=tflite imgsz=640 batch=1 nms=False",
+  "export_artifact_sha256": "99038c4ee1a5cff248ba274d0f16f9e466f3ea404fed231475bfbbfb4ef3e29b",
+  "export_artifact_bytes": 9350262,
+  "input": { "dtype": "float32", "layout": "BCHW", "shape": [1, 3, 640, 640], "range": [0, 1] },
+  "outputs": [{ "name": "output_0", "dtype": "float32", "shape": [1, 300, 6], "semantics": "pixel_xyxy_score_class" }],
+  "labels": ["animal", "person", "vehicle"],
+  "preprocess": { "resize": "letterbox", "pad_value": 0 },
+  "postprocess": { "decoder": "yolov10_end_to_end", "selected_class": "animal", "threshold": 0.25, "nms_iou": null },
+  "verified_runtime": { "accelerator": "wasm", "compile_and_sample_inference": true },
+  "verified_at": "2026-07-19"
+}

@@ -112,3 +112,6 @@ scoreImageFeature.addEventListener('change', toggleScoreImageDisplay);
 
 document.addEventListener('DOMContentLoaded', restoreOptions);
 document.getElementById('save').addEventListener('click', saveOptions);
+document.getElementById('open-crop-dataset').addEventListener('click', function() {
+    chrome.tabs.create({ url: chrome.runtime.getURL('dataset.html') });
+});

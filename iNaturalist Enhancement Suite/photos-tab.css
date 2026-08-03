@@ -34,33 +34,84 @@
 }
 
 .taxon-photos-header p {
-    margin: 0 0 10px 0;
-    font-size: 12px;
-    color: #666;
-    line-height: 1.4;
+	margin: 0 0 5px;
+	font-size: 12px;
+	color: #666;
+	line-height: 1.4;
+}
+
+.taxon-photos-browse-link {
+	display: inline-block;
+	margin-bottom: 12px;
+	color: #74ac00;
+	font-size: 11px;
+	font-weight: 600;
+	text-decoration: none;
 }
 
 .taxon-photos-controls {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 8px;
-    font-size: 13px;
-    color: #333;
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 7px 14px;
+	padding: 9px 0;
+	border-top: 1px solid rgba(0, 0, 0, 0.08);
+	border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+	font-size: 13px;
+	color: #333;
 }
 
-.taxon-photos-controls input[type="checkbox"] {
-    margin: 0;
-    cursor: pointer;
+.taxon-photos-toggle-list {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 7px 14px;
 }
 
 .taxon-photos-controls label {
-    margin: 0;
-    cursor: pointer;
-    font-weight: normal;
-    display: flex;
-    align-items: center;
-    gap: 6px;
+	margin: 0;
+	font-weight: normal;
+}
+
+.taxon-photos-toggle {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+	line-height: 1.3;
+	white-space: nowrap;
+}
+
+.taxon-photos-controls input[type="checkbox"] {
+	flex: 0 0 auto;
+	margin: 0;
+	cursor: pointer;
+}
+
+.taxon-photos-controls input[type="checkbox"]:disabled,
+.taxon-photos-controls input[type="checkbox"]:disabled + span {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.taxon-photos-quality-control {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.taxon-photos-quality-control > span {
+	white-space: nowrap;
+}
+
+.taxon-photos-quality-control select {
+	width: auto;
+	padding: 3px 24px 3px 7px;
+	border: 1px solid #ccc;
+	border-radius: 4px;
+	background: #fff;
+	font-size: 12px;
+	cursor: pointer;
 }
 
 /* Responsive 3-Column Grid */

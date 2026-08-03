@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Crop dataset · iNaturalist Enhancement Suite</title>
+    <link rel="stylesheet" href="dataset.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <p class="eyebrow">iNaturalist Enhancement Suite</p>
+            <div class="title-line"><h1>Crop dataset</h1><span class="pilot-badge">500-image pilot</span></div>
+            <p class="subtitle">Review human crops and compare wildlife detectors.</p>
+        </div>
+        <div class="header-actions">
+            <button id="refresh-metadata" class="quiet">Refresh taxa</button>
+            <button id="collector-status" class="collector-status checking" type="button" title="Click to check the local collector">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span id="collector-state">Checking collector…</span>
+                <small id="collector-detail">Annotations remain safe in extension storage.</small>
+            </button>
+        </div>
+    </header>
+
+    <main>
+        <section class="stats" aria-label="Dataset progress">
+            <article class="progress-card">
+                <div class="progress-heading"><strong id="verified-count">0 / 500 verified</strong><span id="progress-percent">0%</span></div>
+                <div class="progress-track"><span id="progress-bar"></span></div>
+                <small>Only reviewed, verified annotations count toward the pilot.</small>
+            </article>
+            <article><span>Pending</span><strong id="pending-count">0</strong></article>
+            <article><span>Rejected</span><strong id="rejected-count">0</strong></article>
+            <article><span>Total saved</span><strong id="total-count">0</strong></article>
+        </section>
+
+        <section class="workspace">
+            <aside class="review-queue">
+                <div class="queue-heading">
+                    <div><h2>Review queue</h2><p id="queue-count">0 annotations</p></div>
+                    <select id="sort-order" aria-label="Sort annotations">
+                        <option value="newest">Newest first</option>
+                        <option value="oldest">Oldest first</option>
+                        <option value="priority">Priority first</option>
+                        <option value="taxon">Taxon A–Z</option>
+                    </select>
+                </div>
+                <div class="status-tabs" role="group" aria-label="Annotation status">
+                    <button type="button" data-status="pending" class="active">Needs review <span id="pending-tab-count">0</span></button>
+                    <button type="button" data-status="all">All <span id="all-tab-count">0</span></button>
+                    <button type="button" data-status="verified">Approved <span id="verified-tab-count">0</span></button>
+                    <button type="button" data-status="rejected">Rejected <span id="rejected-tab-count">0</span></button>
+                </div>
+                <label class="queue-search"><span>Search annotations</span><input id="annotation-search" type="search" placeholder="Taxon, annotation ID, photo ID…"></label>
+                <div id="record-list" class="record-list"></div>
+            </aside>
+            <article id="editor" class="editor empty">
+                <p id="empty-message">Choose an annotation from the review queue.</p>
+                <div id="editor-content" hidden>
+                    <header class="editor-header">
+                        <div class="editor-identity">
+                            <p class="eyebrow">Selected annotation</p>
+                            <h2 id="selected-title">Annotation</h2>
+                            <div class="annotation-id-line"><code id="annotation-id"></code><button type="button" id="copy-annotation-id" class="compact">Copy ID</button></div>
+                        </div>
+                        <div class="queue-navigation">
+                            <button type="button" id="previous-record" class="compact" title="Previous annotation">← Previous</button>
+                            <button type="button" id="next-record" class="compact" title="Next annotation">Next →</button>
+                        </div>
+                    </header>
+                    <div class="review-actions">
+                        <button type="button" id="verify-record" class="primary">Approve &amp; next</button>
+                        <button type="button" id="reject-record" class="danger">Reject &amp; next</button>
+                        <button type="button" id="pending-record" class="quiet">Return to needs review</button>
+                        <span>Actions advance through the current queue without reordering it.</span>
+                    </div>
+                    <div class="preview" id="preview"><img id="preview-image" alt="Selected iNaturalist photo"><div id="box-overlay" title="Your saved crop"></div><span class="crop-label">Your saved crop</span></div>
+                    <section class="model-runs-section">
+                        <h2>Detector proposals compared with your crop</h2>
+                        <p><strong>Box IoU</strong> is the intersection area divided by the combined union area. It compares box geometry, not model confidence. On a small subject, a shift of only a few pixels can reduce IoU sharply even when the boxes look close. Models are ranked by IoU, best match first.</p>
+                        <div id="model-runs-list" class="model-runs-list"></div>
+                    </section>
+                    <form id="edit-form">
+                        <div class="form-grid">
+                            <label>Scientific taxon<input id="taxon-name" type="text"></label>
+                            <label>Common name<input id="taxon-common-name" type="text"></label>
+                            <label>Taxonomic group<input id="taxon-group" type="text"></label>
+                            <label class="wide">Priority tags<input id="priority-flags" type="text" placeholder="small_subject, camouflage, clutter"><small>Comma-separated reasons to review this example early. They do not change the taxon or crop.</small></label>
+                        </div>
+                        <div class="editor-actions"><button type="submit">Save metadata</button><a id="observation-link" target="_blank" rel="noopener">Open observation ↗</a></div>
+                    </form>
+                </div>
+            </article>
+        </section>
+
+        <section class="insights">
+            <article class="benchmark-card">
+                <div class="section-heading">
+                    <div><h2>Detector benchmark</h2><p>Ranked by mean box IoU with your approved crops.</p></div>
+                    <span id="benchmark-sample" class="sample-badge">0 approved crops</span>
+                </div>
+                <div class="table-scroll">
+                    <table class="benchmark-table">
+                        <thead><tr><th>#</th><th>Detector</th><th>Mean box IoU</th><th>IoU ≥ 50%</th><th>Box rate</th><th>Coverage</th><th>Median total</th><th>P90 total</th></tr></thead>
+                        <tbody id="benchmark-body"></tbody>
+                    </table>
+                </div>
+                <p class="method-note">Box IoU = intersection area ÷ union area. No detection or missing run counts as zero. Timings are wall-clock latency on this device, not direct CPU measurements.</p>
+            </article>
+            <div class="chart-grid">
+                <article class="chart-card"><div class="section-heading"><div><h2>Taxonomic coverage</h2><p>Saved crops by broad group.</p></div></div><div id="taxon-chart" class="donut-layout"></div></article>
+                <article class="chart-card"><div class="section-heading"><div><h2>Priority tags</h2><p>Reasons examples are valuable or need attention.</p></div></div><div id="priority-chart" class="donut-layout"></div></article>
+            </div>
+        </section>
+
+        <details class="dataset-tools">
+            <summary>Dataset tools and exports</summary>
+            <div class="tools-content">
+                <div>
+                    <h2>Backup and training exports</h2>
+                    <p>Exports include verified annotations only where applicable. Source photos remain external.</p>
+                    <div class="toolbar">
+                        <button id="backup-json">Backup JSON</button>
+                        <button id="import-json">Import JSON</button>
+                        <button id="export-coco">Export COCO</button>
+                        <button id="export-yolo">Export YOLO</button>
+                        <input id="import-file" type="file" accept="application/json,.json" hidden>
+                    </div>
+                </div>
+                <div id="collector-setup" class="collector-setup">
+                    <h2>Collector connection</h2>
+                    <p>This is normally a one-time setup. Records stay queued locally while the collector is offline.</p>
+                    <label>Collector token<input id="collector-token" type="password" autocomplete="off" placeholder="Paste the token printed by the collector"></label>
+                    <div class="toolbar"><button id="sync-collector" type="button">Connect once</button><button id="retry-collector" type="button" hidden>Retry connection</button></div>
+                </div>
+            </div>
+        </details>
+        <p id="notice" role="status"></p>
+    </main>
+    <script src="crop-dataset.js"></script>
+    <script src="dataset-review.js"></script>
+    <script src="dataset.js"></script>
+</body>
+</html>
