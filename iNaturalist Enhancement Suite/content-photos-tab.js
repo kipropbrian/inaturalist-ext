@@ -168,9 +168,8 @@
 				panel.querySelector('.taxon-photos-prev-btn').addEventListener('click', () => {
 					if (!isLoading && currentPage > 1) {
 						currentPage--;
-						const grid = panel.querySelector('.taxon-photos-grid');
-						if (grid) grid.innerHTML = '';
-						loadPhotos();
+						resetPhotos(false);
+						loadPhotos(false);
 					}
 				});
 
@@ -178,16 +177,73 @@
 				panel.querySelector('.taxon-photos-next-btn').addEventListener('click', () => {
 					if (!isLoading && hasMore) {
 						currentPage++;
-						const grid = panel.querySelector('.taxon-photos-grid');
-						if (grid) grid.innerHTML = '';
-						loadPhotos();
+						loadPhotos(true);
 					}
 				});
 			}
 
 			// Update header details with current taxon info
 			updateHeaderDetails();
+			setupScrollAndObserver(panel);
 			startTabObserver();
+		}
+
+		function setupScrollAndObserver(panel) {
+			if (!panel || panel.dataset.inatScrollInit) return;
+			panel.dataset.inatScrollInit = 'true';
+
+			const handleScrollCheck = () => {
+				if (!currentTabActive || isLoading || !hasMore || !currentTaxon) return;
+
+				const scrollContainer = panel.scrollHeight > panel.clientHeight ? panel : panel.closest('.sidebar') || panel.parentElement;
+				if (!scrollContainer) return;
+
+				const distanceToBottom = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+				if (distanceToBottom < 300) {
+					currentPage++;
+					loadPhotos(true);
+				}
+			};
+
+			let throttleTimeout = null;
+			const throttledScroll = () => {
+				if (throttleTimeout) return;
+				throttleTimeout = setTimeout(() => {
+					throttleTimeout = null;
+					handleScrollCheck();
+				}, 150);
+			};
+
+			panel.addEventListener('scroll', throttledScroll, { passive: true });
+
+			const sidebar = panel.closest('.sidebar');
+			if (sidebar) {
+				sidebar.addEventListener('scroll', throttledScroll, { passive: true });
+			}
+
+			if ('IntersectionObserver' in window) {
+				let sentinel = panel.querySelector('.taxon-photos-sentinel');
+				if (!sentinel) {
+					sentinel = document.createElement('div');
+					sentinel.className = 'taxon-photos-sentinel';
+					sentinel.style.cssText = 'height: 10px; width: 100%; pointer-events: none;';
+					panel.appendChild(sentinel);
+				}
+
+				const observer = new IntersectionObserver(entries => {
+					if (entries[0] && entries[0].isIntersecting) {
+						if (currentTabActive && !isLoading && hasMore && currentTaxon) {
+							currentPage++;
+							loadPhotos(true);
+						}
+					}
+				}, {
+					root: null,
+					rootMargin: '200px 0px'
+				});
+
+				observer.observe(sentinel);
+			}
 		}
 
 		function removeTabElements() {
@@ -262,18 +318,26 @@
 			if (modal) modal.classList.remove('inat-custom-tab-active');
 		}
 
+		let isDeactivating = false;
+
 		function startTabObserver() {
 			if (tabObserver) return;
 			const tabsList = document.querySelector('.ObservationModal .inat-tabs');
 			if (!tabsList) return;
 
 			tabObserver = new MutationObserver(mutations => {
+				if (isDeactivating) return;
 				mutations.forEach(mutation => {
 					if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
 						const target = mutation.target;
 						// If a native tab button becomes active, we yield and deactivate ours
 						if (target.classList.contains('active') && !target.classList.contains('taxon-photos-tab-li')) {
-							deactivateCustomTab();
+							isDeactivating = true;
+							try {
+								deactivateCustomTab();
+							} finally {
+								isDeactivating = false;
+							}
 						}
 					}
 				});
@@ -294,8 +358,10 @@
 		}
 
 		// ── Photos Loading & Fetching ────────────────────────────────────────
-		function resetPhotos() {
-			currentPage = 1;
+		function resetPhotos(resetPage = true) {
+			if (resetPage) {
+				currentPage = 1;
+			}
 			hasMore = true;
 			isLoading = false;
 			if (photosCtrl) {
@@ -306,7 +372,7 @@
 			const panel = document.getElementById('inat-taxon-photos-panel');
 			if (panel) {
 				const grid = panel.querySelector('.taxon-photos-grid');
-				if (grid) grid.innerHTML = '';
+				if (grid && resetPage) grid.innerHTML = '';
 
 				const err = panel.querySelector('#taxon-photos-error-container');
 				if (err) {
@@ -319,7 +385,7 @@
 			}
 		}
 
-		async function loadPhotos() {
+		async function loadPhotos(isAppend = false) {
 			if (!currentTaxon || isLoading) return;
 
 			const panel = document.getElementById('inat-taxon-photos-panel');
@@ -334,6 +400,10 @@
 			if (loader) loader.style.display = 'flex';
 			if (errContainer) errContainer.style.display = 'none';
 			if (pagination) pagination.style.display = 'none';
+
+			if (!isAppend && grid) {
+				grid.innerHTML = '';
+			}
 
 			if (photosCtrl) photosCtrl.abort();
 			photosCtrl = new AbortController();
@@ -370,11 +440,11 @@
 					String(obs.id) !== String(currentObservationId)
 				));
 
-				if (currentPage === 1 && comparisonObservations.length === 0) {
+				if (!isAppend && currentPage === 1 && comparisonObservations.length === 0) {
 					renderEmptyState(grid);
 					hasMore = false;
 				} else {
-					renderPhotoGrid(grid, comparisonObservations);
+					renderPhotoGrid(grid, comparisonObservations, isAppend);
 					// If we pulled fewer observations than per_page (12), there are no more next pages
 					hasMore = observations.length === 12;
 				}
@@ -395,7 +465,7 @@
 			}
 		}
 
-		function renderPhotoGrid(grid, observations) {
+		function renderPhotoGrid(grid, observations, isAppend = false) {
 			if (!grid) return;
 
 			let html = '';
@@ -420,7 +490,11 @@
 				`;
 			});
 
-			grid.innerHTML = html;
+			if (isAppend) {
+				grid.insertAdjacentHTML('beforeend', html);
+			} else {
+				grid.innerHTML = html;
+			}
 		}
 
 		function renderEmptyState(grid) {

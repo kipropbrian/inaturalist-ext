@@ -4,7 +4,7 @@
   "description": "iNaturalist Enhancement Suite Extension",
   "type": "module",
   "scripts": {
-    "test": "node tests/run_tests.js && node tests/test_genus_count.js && node tests/test_updates_filter.js && node tests/test_identification_filter.js && node tests/test_crop_dataset.js && node tests/test_crop_job.js && node tests/test_detector_postprocess.js && node tests/test_dataset_review.js",
+    "test": "node tests/run_tests.js && node tests/test_genus_count.js && node tests/test_updates_filter.js && node tests/test_identification_filter.js && node tests/test_autocomplete_observer.js && node tests/test_crop_dataset.js && node tests/test_crop_job.js && node tests/test_detector_postprocess.js && node tests/test_dataset_review.js",
     "test:models": "node tests/inspect_litert_model.js 'iNaturalist Enhancement Suite/lib/litert/models/arthropod-yolo11n.tflite' tests/images/grasshopper_1.jpg && node tests/inspect_litert_model.js 'iNaturalist Enhancement Suite/lib/litert/models/megadetector-v6-compact.tflite' tests/images/rat.jpg && node tests/inspect_litert_model.js 'iNaturalist Enhancement Suite/lib/litert/models/u2netp-saliency.tflite' tests/images/grasshopper_1.jpg"
   },
   "dependencies": {

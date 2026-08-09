@@ -427,150 +427,163 @@ chrome.storage.sync.get({
 
 	// colorization
 	document.arrive('.TaxonAutocomplete > ul', ul => {
+		// Ignore autocompletes belonging to filter popovers (e.g., Suggestions tab filters)
+		if (ul.closest('.TaxonChooserPopover, .RecordChooserPopover, .popover, .filters, #suggestions-taxon-chooser')) {
+			return;
+		}
+
+		let isModifying = false;
+
 		// triggered when the subtree changes, i.e. the CV rows are created, or classes are added/removed
 		function observeCallback(mutations) {
-			for (const mutation of mutations) {
-				const element = mutation.target;
-				switch (mutation.type) {
-					case 'childList': {
-						const divs = element.querySelectorAll('div.ac.vision');
+			if (isModifying) return;
+			isModifying = true;
+			try {
+				for (const mutation of mutations) {
+					const element = mutation.target;
+					switch (mutation.type) {
+						case 'childList': {
+							const divs = element.querySelectorAll('div.ac.vision');
 
-						// short-circuit if the CV rows haven't been populated yet
-						if (!divs.length) {
-							return;
-						}
+							// short-circuit if the CV rows haven't been populated yet
+							if (!divs.length) {
+								return;
+							}
 
-						let parent = element.parentNode;
+							let parent = element.parentNode;
 
-						// in the upload workflow, we need to work up the tree to find a parent element
-						if (window.location.href.indexOf('upload') > -1) {
-							do {
-								if (parent.classList.contains('cellDropzone')) {
-									break;
+							// in the upload workflow, we need to work up the tree to find a parent element
+							if (window.location.href.indexOf('upload') > -1) {
+								do {
+									if (parent.classList.contains('cellDropzone')) {
+										break;
+									}
+
+									parent = parent.parentNode;
+								} while (parent.parentNode);
+							}
+
+							logDebug('parent', parent);
+
+							// img will be falsy here on the single-observation page
+							const img = parent.querySelector('img.img-thumbnail');
+							const key = img ? img.alt : DEFAULT_KEY_NAME;
+
+							logDebug('key', key);
+
+							const computerVision = computerVisionResults.get(key);
+							if (!computerVision) {
+								return;
+							}
+
+							// color each suggestion based on the cached CV results
+							for (const div of divs) {
+								const taxonId = div.getAttribute('data-taxon-id');
+								const result = computerVision.results.find(t => t.taxon.id == taxonId);
+								let score;
+								if (result) {
+									score = result.combined_score;
+								} else if (computerVision.common_ancestor && computerVision.common_ancestor.taxon && computerVision.common_ancestor.taxon.id == taxonId) {
+									score = computerVision.common_ancestor.score;
 								}
 
-								parent = parent.parentNode;
-							} while (parent.parentNode);
-						}
+								if (score) {
+									let hue = score * 1.2;
+									chrome.storage.sync.get({
+										enableColorVision: true,
+										colorDisplayMode: 'sidebar',
+										enableColorBlindMode: false,
+										enableCVPercentages: true
+									}, function(colorItems) {
+										if (chrome.runtime.lastError) {
+											console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
+											return;
+										}
+										if (colorItems.enableColorBlindMode) {
+											hue = hue * -1 + 240;
+										}
 
-						logDebug('parent', parent);
+										const li = div.closest('li');
 
-						// img will be falsy here on the single-observation page
-						const img = parent.querySelector('img.img-thumbnail');
-						const key = img ? img.alt : DEFAULT_KEY_NAME;
+										// Apply color coding if enabled
+										if (colorItems.enableColorVision) {
+											if (colorItems.colorDisplayMode === 'gradient') {
+												div.style.background = 'linear-gradient(to right, hsl(' + hue + ',50%,50%), white 90%)';
+											} else {
+												// Add rounded sidebar element instead of border-left
+												if (!li.querySelector('.cv-sidebar')) {
+													const ul = div.parentNode.parentNode;
+													if (!ul.classList.contains(FLAG_CLASS)) {
+														ul.style.width = parseInt(ul.style.width) + 18 + 'px';
+														ul.classList.add(FLAG_CLASS);
+													}
 
-						logDebug('key', key);
+													const sidebar = document.createElement('div');
+													sidebar.className = 'cv-sidebar';
+													sidebar.style.cssText = 'width: 6px; background: hsl(' + hue + ', 50%, 50%); border-radius: 3px; position: absolute; left: 4px; top: 4px; bottom: 4px;';
 
-						const computerVision = computerVisionResults.get(key);
-						if (!computerVision) {
-							return;
-						}
-
-						// color each suggestion based on the cached CV results
-						for (const div of divs) {
-							const taxonId = div.getAttribute('data-taxon-id');
-							const result = computerVision.results.find(t => t.taxon.id == taxonId);
-							let score;
-							if (result) {
-								score = result.combined_score;
-							} else if (computerVision.common_ancestor && computerVision.common_ancestor.taxon && computerVision.common_ancestor.taxon.id == taxonId) {
-								score = computerVision.common_ancestor.score;
-							}
-
-							if (score) {
-								let hue = score * 1.2;
-								chrome.storage.sync.get({
-									enableColorVision: true,
-									colorDisplayMode: 'sidebar',
-									enableColorBlindMode: false,
-									enableCVPercentages: true
-								}, function(colorItems) {
-									if (chrome.runtime.lastError) {
-										console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
-										return;
-									}
-									if (colorItems.enableColorBlindMode) {
-										hue = hue * -1 + 240;
-									}
-
-									const li = div.closest('li');
-
-									// Apply color coding if enabled
-									if (colorItems.enableColorVision) {
-										if (colorItems.colorDisplayMode === 'gradient') {
-											div.style.background = 'linear-gradient(to right, hsl(' + hue + ',50%,50%), white 90%)';
-										} else {
-											// Add rounded sidebar element instead of border-left
-											if (!li.querySelector('.cv-sidebar')) {
-												const ul = div.parentNode.parentNode;
-												if (!ul.classList.contains(FLAG_CLASS)) {
-													ul.style.width = parseInt(ul.style.width) + 18 + 'px';
-													ul.classList.add(FLAG_CLASS);
-												}
-
-												const sidebar = document.createElement('div');
-												sidebar.className = 'cv-sidebar';
-												sidebar.style.cssText = 'width: 6px; background: hsl(' + hue + ', 50%, 50%); border-radius: 3px; position: absolute; left: 4px; top: 4px; bottom: 4px;';
-
-												if (li) {
-													li.style.position = 'relative';
-													li.style.paddingLeft = '14px';
-													li.insertBefore(sidebar, li.firstChild);
+													if (li) {
+														li.style.position = 'relative';
+														li.style.paddingLeft = '14px';
+														li.insertBefore(sidebar, li.firstChild);
+													}
 												}
 											}
 										}
-									}
 
-									// Add score badge if not already present
-									if (colorItems.enableCVPercentages && !div.querySelector('.cv-score-badge')) {
-										const badge = document.createElement('span');
-										badge.className = 'cv-score-badge';
-										badge.textContent = score.toFixed(1) + '%';
-										badge.style.cssText = 'font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; background: #74ac00; color: white; flex-shrink: 0; margin-left: auto; margin-right: 8px;';
+										// Add score badge if not already present
+										if (colorItems.enableCVPercentages && !div.querySelector('.cv-score-badge')) {
+											const badge = document.createElement('span');
+											badge.className = 'cv-score-badge';
+											badge.textContent = score.toFixed(1) + '%';
+											badge.style.cssText = 'font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; background: #74ac00; color: white; flex-shrink: 0; margin-left: auto; margin-right: 8px;';
 
-										// Find View link by looking for anchor with "View" text
-										const links = div.querySelectorAll('a');
-										let viewLink = null;
-										for (const link of links) {
-											if (link.textContent.trim() === 'View') {
-												viewLink = link;
-												break;
+											// Find View link by looking for anchor with "View" text
+											const links = div.querySelectorAll('a');
+											let viewLink = null;
+											for (const link of links) {
+												if (link.textContent.trim() === 'View') {
+													viewLink = link;
+													break;
+												}
+											}
+
+											div.style.display = 'flex';
+											div.style.alignItems = 'center';
+
+											if (viewLink) {
+												div.insertBefore(badge, viewLink);
+											} else {
+												div.appendChild(badge);
 											}
 										}
+									});
+								}
 
-										div.style.display = 'flex';
-										div.style.alignItems = 'center';
-
-										if (viewLink) {
-											div.insertBefore(badge, viewLink);
-										} else {
-											div.appendChild(badge);
-										}
-									}
-								});
+								if (
+									computerVision.common_ancestor?.taxon
+									&& computerVision.common_ancestor.taxon.id == taxonId
+								) {
+									addMainSuggestionHierarchy(div, computerVision.common_ancestor.taxon);
+								}
 							}
 
-							if (
-								computerVision.common_ancestor?.taxon
-								&& computerVision.common_ancestor.taxon.id == taxonId
-							) {
-								addMainSuggestionHierarchy(div, computerVision.common_ancestor.taxon);
+							break;
+						}
+
+						case 'attributes': {
+							// reset the flag so we fix the menu width again when the CV menu is reopened
+							const classList = mutation.target.classList;
+							if (!classList.contains('open') && mutation.oldValue.indexOf(' open') > -1 && classList.contains(FLAG_CLASS)) {
+								classList.remove(FLAG_CLASS);
 							}
+
+							break;
 						}
-
-						break;
-					}
-
-					case 'attributes': {
-						// reset the flag so we fix the menu width again when the CV menu is reopened
-						const classList = mutation.target.classList;
-						if (!classList.contains('open') && mutation.oldValue.indexOf(' open') > -1 && classList.contains(FLAG_CLASS)) {
-							classList.remove(FLAG_CLASS);
-						}
-
-						break;
 					}
 				}
+			} finally {
+				isModifying = false;
 			}
 		}
 

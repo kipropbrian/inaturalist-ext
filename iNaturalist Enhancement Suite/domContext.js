@@ -265,6 +265,7 @@ function waitForIdentificationInput(isIdentifyPage, timeoutMs) {
 		const existing = findIdentificationInput(isIdentifyPage);
 		if (existing) return resolve(existing);
 
+		const target = document.querySelector('.ObservationModal') || document.body;
 		const observer = new MutationObserver(() => {
 			const input = findIdentificationInput(isIdentifyPage);
 			if (!input) return;
@@ -276,7 +277,7 @@ function waitForIdentificationInput(isIdentifyPage, timeoutMs) {
 			observer.disconnect();
 			reject(new Error('Could not find autocomplete input after opening identification form'));
 		}, timeoutMs);
-		observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+		observer.observe(target, { childList: true, subtree: true });
 	});
 }
 
@@ -285,6 +286,7 @@ function waitForAddIdButton(timeoutMs) {
 		const existing = findVisibleAddIdButton();
 		if (existing) return resolve(existing);
 
+		const target = document.querySelector('.ObservationModal') || document.body;
 		const observer = new MutationObserver(() => {
 			const button = findVisibleAddIdButton();
 			if (!button) return;
@@ -296,7 +298,7 @@ function waitForAddIdButton(timeoutMs) {
 			observer.disconnect();
 			resolve(null);
 		}, timeoutMs);
-		observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+		observer.observe(target, { childList: true, subtree: true });
 	});
 }
 
@@ -305,6 +307,7 @@ function waitForVisibleElement(selector, timeoutMs, errorMessage) {
 		const existing = findVisibleElement(selector);
 		if (existing) return resolve(existing);
 
+		const target = document.querySelector('.ObservationModal') || document.body;
 		const observer = new MutationObserver(() => {
 			const element = findVisibleElement(selector);
 			if (!element) return;
@@ -316,7 +319,7 @@ function waitForVisibleElement(selector, timeoutMs, errorMessage) {
 			observer.disconnect();
 			reject(new Error(errorMessage));
 		}, timeoutMs);
-		observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+		observer.observe(target, { childList: true, subtree: true });
 	});
 }
 
@@ -325,7 +328,11 @@ function findVisibleElement(selector) {
 }
 
 function isVisibleElement(element) {
+	if (!element) return false;
 	if (element.closest('[aria-hidden="true"]') && !element.closest('.ObservationModal.in')) return false;
+	if (element.offsetParent === null && element.tagName !== 'BODY') {
+		if (window.getComputedStyle(element).position !== 'fixed') return false;
+	}
 	const style = window.getComputedStyle(element);
 	if (style.display === 'none' || style.visibility === 'hidden') return false;
 	return element.getClientRects().length > 0;
@@ -396,10 +403,12 @@ function closeAutocompleteMenu($input, container) {
 }
 
 function closeAllTaxonAutocompleteMenus() {
-	document.querySelectorAll('.ui-autocomplete.taxon-autocomplete, .taxon-autocomplete, .ac-menu')
+	document.querySelectorAll('.ui-autocomplete.taxon-autocomplete:not([style*="display: none"]), .taxon-autocomplete.open, .ac-menu.open')
 		.forEach(menu => {
 			menu.classList.remove('open');
-			menu.style.display = 'none';
+			if (menu.style.display !== 'none') {
+				menu.style.display = 'none';
+			}
 		});
 }
 
@@ -415,6 +424,16 @@ document.addEventListener('click', event => {
 document.addEventListener('click', event => {
 	if (!event.target.closest('.ObservationModal .close-button, .ObservationModal button.close, .modal-backdrop')) return;
 	scheduleTaxonAutocompleteCleanup();
+}, true);
+
+// Blur focus when switching modal tabs to prevent aria-hidden focus blocking reflow warnings
+document.addEventListener('click', event => {
+	const tabBtn = event.target.closest('.ObservationModal .inat-tabs button, .ObservationModal .inat-tabs a, .ObservationModal .nav-tabs button, .ObservationModal .nav-tabs a');
+	if (!tabBtn) return;
+	const focused = document.activeElement;
+	if (focused && focused !== document.body && typeof focused.blur === 'function') {
+		focused.blur();
+	}
 }, true);
 
 document.addEventListener('hidden.bs.modal', scheduleTaxonAutocompleteCleanup, true);
