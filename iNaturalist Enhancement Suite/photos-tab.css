@@ -114,6 +114,11 @@
 	cursor: pointer;
 }
 
+.taxon-photos-quality-control select:disabled {
+	cursor: not-allowed;
+	opacity: 0.55;
+}
+
 /* Responsive 3-Column Grid */
 .taxon-photos-grid {
     display: grid;

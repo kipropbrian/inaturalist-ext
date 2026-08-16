@@ -17,16 +17,24 @@
 		let photosCtrl = null;
 		let tabObserver = null;
 
-		// ── Listen for observation fetch event ───────────────────────────────
-		document.addEventListener('observationFetch', event => {
-			const obs = event.detail.observation;
-			if (!obs) return;
+		function isUsableTaxon(taxon) {
+			if (!taxon || taxon.id == null) return false;
+			// iNaturalist's selected autocomplete model can omit rank_level even
+			// for a species. A known taxon ID is sufficient to request its photos;
+			// retain the existing broad-taxon guard when rank_level is supplied.
+			return typeof taxon.rank_level !== 'number' || taxon.rank_level <= 40;
+		}
 
-			currentObservationId = obs.id || null;
-			const taxon = obs.taxon;
-			
-			// We only show the tab for Order level or below (rank_level <= 40)
-			if (taxon && typeof taxon.rank_level === 'number' && taxon.rank_level <= 40) {
+		function setTaxon(taxon, { forceRefresh = false } = {}) {
+			const isSameTaxon = taxon?.id != null
+				&& String(taxon.id) === String(currentTaxon?.id);
+			if (isSameTaxon && !forceRefresh) {
+				// Native autocomplete can emit the same selection again. Preserve the
+				// loaded gallery instead of tearing down the Photos tab and refetching.
+				return;
+			}
+
+			if (isUsableTaxon(taxon)) {
 				currentTaxon = taxon;
 				ensureTabInjected();
 				resetPhotos();
@@ -34,18 +42,37 @@
 					loadPhotos();
 				}
 			} else {
-				// No taxon, or taxon is above Order level (e.g. Class, Kingdom/plants, etc.)
+				// Keep Photos visible even when there is no usable taxon, but do not
+				// request photos for an unknown or above-order identification.
 				currentTaxon = null;
-				deactivateCustomTab();
-				removeTabElements();
+				ensureTabInjected();
+				resetPhotos();
+				updateHeaderDetails();
+				if (currentTabActive) {
+					renderTaxonUnavailable();
+				}
 			}
+		}
+
+		// ── Listen for observation fetch event ───────────────────────────────
+		document.addEventListener('observationFetch', event => {
+			const obs = event.detail.observation;
+			if (!obs) return;
+
+			currentObservationId = obs.id || null;
+			setTaxon(obs.taxon, { forceRefresh: true });
+		});
+
+		// iNaturalist does not update the observation taxon until the identifier
+		// saves. Use the selected draft taxon so Photos is available while they
+		// are still deciding whether to submit the identification.
+		document.addEventListener('inatExtDraftTaxonSelected', event => {
+			setTaxon(event.detail?.taxon);
 		});
 
 		// ── Modal Arrive & Leave hooks ───────────────────────────────────────
 		document.arrive('.ObservationModal .sidebar', { existing: true }, function () {
-			if (currentTaxon) {
-				ensureTabInjected();
-			}
+			ensureTabInjected();
 		});
 
 		document.leave('.ObservationModal', function () {
@@ -246,21 +273,24 @@
 			}
 		}
 
-		function removeTabElements() {
-			const tabLi = document.getElementById('inat-taxon-photos-tab-li');
-			if (tabLi) tabLi.remove();
-
-			const panel = document.getElementById('inat-taxon-photos-panel');
-			if (panel) panel.remove();
-
-			stopTabObserver();
-		}
-
 		function updateHeaderDetails() {
 			const panel = document.getElementById('inat-taxon-photos-panel');
-			if (!panel || !currentTaxon) return;
+			if (!panel) return;
 
 			const titleEl = panel.querySelector('.taxon-name-title');
+			const browseLink = panel.querySelector('.taxon-photos-browse-link');
+			const controls = panel.querySelector('.taxon-photos-controls');
+			if (!currentTaxon) {
+				if (titleEl) titleEl.textContent = 'Taxon Photos';
+				const description = panel.querySelector('.taxon-photos-desc');
+				if (description) description.textContent = 'Select a species to browse comparison photos.';
+				if (browseLink) browseLink.style.display = 'none';
+				if (controls) controls.querySelectorAll('input, select').forEach(control => {
+					control.disabled = true;
+				});
+				return;
+			}
+
 			if (titleEl) {
 				const common = currentTaxon.preferred_common_name || '';
 				const sci = currentTaxon.name || '';
@@ -271,13 +301,23 @@
 				}
 			}
 
-			const browseLink = panel.querySelector('.taxon-photos-browse-link');
 			if (browseLink) {
 				browseLink.href = `https://www.inaturalist.org/taxa/${currentTaxon.id}/browse_photos`;
+				browseLink.style.display = '';
+			}
+			if (controls) {
+				controls.querySelectorAll('input, select').forEach(control => {
+					control.disabled = control.id === 'taxon-photos-my-ids-chk' && !getCurrentUserId();
+				});
 			}
 		}
 
 		function activateCustomTab() {
+			// Close the native list before its tab is hidden, then re-read the
+			// selected taxon. This covers CV-applied selections and prevents an
+			// autocomplete overlay from obscuring the photo gallery.
+			document.dispatchEvent(new CustomEvent('inatExtCloseTaxonAutocomplete'));
+			document.dispatchEvent(new CustomEvent('inatExtRequestDraftTaxon'));
 			currentTabActive = true;
 
 			// Make tab button active
@@ -296,6 +336,11 @@
 			// Hide native panels in sidebar via parent class on modal
 			const modal = document.querySelector('.ObservationModal');
 			if (modal) modal.classList.add('inat-custom-tab-active');
+
+			if (!currentTaxon) {
+				renderTaxonUnavailable();
+				return;
+			}
 
 			// If grid is empty, fetch initial photos
 			const grid = panel ? panel.querySelector('.taxon-photos-grid') : null;
@@ -508,6 +553,13 @@
 			const msg = `<strong>No matching photos found</strong>${detail}`;
 
 			grid.innerHTML = `<li style="grid-column: span 3;"><div class="taxon-photos-empty">${msg}</div></li>`;
+		}
+
+		function renderTaxonUnavailable() {
+			const panel = document.getElementById('inat-taxon-photos-panel');
+			const grid = panel?.querySelector('.taxon-photos-grid');
+			if (!grid) return;
+			grid.innerHTML = '<li style="grid-column: span 3;"><div class="taxon-photos-empty"><strong>Select a species to view photos</strong>Photos will load here after you choose a taxon.</div></li>';
 		}
 
 		function updatePaginationControls(panel) {

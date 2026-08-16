@@ -403,12 +403,23 @@ function closeAutocompleteMenu($input, container) {
 }
 
 function closeAllTaxonAutocompleteMenus() {
-	document.querySelectorAll('.ui-autocomplete.taxon-autocomplete:not([style*="display: none"]), .taxon-autocomplete.open, .ac-menu.open')
+	if (typeof window.$ === 'function') {
+		$('.ObservationModal .TaxonAutocomplete input[name="taxon_name"], .ObservationModal .TaxonAutocomplete input[type="search"]').each((_, input) => {
+			const $input = $(input);
+			const autocomplete = $input.data('uiAutocomplete') || $input.data('autocomplete');
+			if (autocomplete && typeof $input.autocomplete === 'function') {
+				$input.autocomplete('close');
+			}
+			if (autocomplete?.menu?.element) {
+				autocomplete.menu.element.empty().hide();
+			}
+		});
+	}
+	document.querySelectorAll('.ObservationModal .TaxonAutocomplete > ul, .ObservationModal .ui-autocomplete, .ObservationModal .taxon-autocomplete, .ObservationModal .ac-menu')
 		.forEach(menu => {
 			menu.classList.remove('open');
-			if (menu.style.display !== 'none') {
-				menu.style.display = 'none';
-			}
+			menu.replaceChildren();
+			menu.style.display = 'none';
 		});
 }
 
@@ -437,6 +448,27 @@ document.addEventListener('click', event => {
 }, true);
 
 document.addEventListener('hidden.bs.modal', scheduleTaxonAutocompleteCleanup, true);
+
+// The Photos tab lives in an isolated extension world. Let it close an open
+// native autocomplete menu before hiding the identification form, and let it
+// re-read the selected taxon when it opens in case a selection event was missed.
+document.addEventListener('inatExtCloseTaxonAutocomplete', () => {
+	closeAllTaxonAutocompleteMenus();
+	scheduleTaxonAutocompleteCleanup();
+});
+document.addEventListener('inatExtRequestDraftTaxon', () => {
+	if (typeof window.$ !== 'function') return;
+	const input = document.querySelector('.ObservationModal .IdentificationForm input[name="taxon_name"], .ObservationModal .IdentificationForm input[type="search"]');
+	if (!input) return;
+	const selectedTaxon = $(input).data('autocomplete-item');
+	if (!selectedTaxon?.id) return;
+	const draftTaxon = typeof selectedTaxon.toJSON === 'function'
+		? selectedTaxon.toJSON()
+		: selectedTaxon;
+	document.dispatchEvent(new CustomEvent('inatExtDraftTaxonSelected', {
+		detail: { taxon: draftTaxon }
+	}));
+});
 
 const oldFetch = window.fetch;
 window.fetch = async (url, options) => {
@@ -542,6 +574,17 @@ function setupAssignSelectionListener() {
 			if (!selectedTaxon) return;
 			const input = this;
 			const form = input.closest('form');
+			const identificationForm = input.closest('.IdentificationForm');
+			if (identificationForm) {
+				// The observation itself is unchanged until Save is clicked. Broadcast
+				// the draft selection so isolated-world features can react immediately.
+				const draftTaxon = typeof selectedTaxon.toJSON === 'function'
+					? selectedTaxon.toJSON()
+					: selectedTaxon;
+				document.dispatchEvent(new CustomEvent('inatExtDraftTaxonSelected', {
+					detail: { taxon: draftTaxon }
+				}));
+			}
 			if (form && currentInterceptedSpeciesGuess) {
 				const textarea = form.querySelector('textarea');
 				if (textarea && !textarea.value.trim()) {
