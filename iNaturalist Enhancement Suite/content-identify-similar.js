@@ -13,6 +13,9 @@
 		let currentPlaceId = null;
 		let loadSequence = 0;
 		const taxonCache = new Map();
+		let currentClassificationHtml = '';
+		let currentClassificationTaxon = null;
+		let classificationObserver = null;
 
 		// Listen for observationFetch events to track the current observation's taxon ID
 		document.addEventListener('observationFetch', event => {
@@ -29,13 +32,24 @@
 
 		// The native Info panel puts map/details first and identification activity after it.
 		// Appending here gives the section the full sidebar width below the suggested IDs.
-		document.arrive('.ObservationModal .info-tab-inner', { existing: true }, function () {
-			if (this.querySelector('#inat-similar-section')) return;
-			const panel = document.createElement('div');
+			document.arrive('.ObservationModal .info-tab-inner', { existing: true }, function () {
+				if (this.querySelector('#inat-similar-section')) return;
+				const panel = document.createElement('div');
 			panel.id = 'inat-similar-section';
 			panel.className = 'inat-similar-section';
 			this.appendChild(panel);
-			loadSimilarSpecies();
+				loadSimilarSpecies();
+			});
+
+		// iNaturalist can render the leading identification card after the info
+		// panel. Relocate a fallback taxonomy block once that card arrives.
+		document.arrive('.ObservationModal .leading.panel.panel-default', { existing: true }, function () {
+				const panel = document.getElementById('inat-similar-section');
+				if (panel) relocateClassification(panel);
+		});
+		document.arrive('.ObservationModal .ActivityItem.identification', { existing: true }, function () {
+				const panel = document.getElementById('inat-similar-section');
+				if (panel) relocateClassification(panel);
 		});
 
 		// ── Core Functionality ───────────────────────────────────────────────
@@ -45,9 +59,11 @@
 			if (!panel) return;
 			const sequence = ++loadSequence;
 			const taxon = currentTaxon;
+			currentClassificationHtml = '';
+			currentClassificationTaxon = null;
+			removeEmbeddedClassification();
 
 			panel.innerHTML = `
-				<div id="inat-similar-classification"></div>
 				<div class="inat-similar-header">
 					<h3>Commonly Confused Species</h3>
 					<p>These species are most frequently misidentified as the observed taxon on iNaturalist.</p>
@@ -70,9 +86,10 @@
 			try {
 				const classificationHtml = await buildClassification(taxon);
 				if (!isCurrentPanel(panel, sequence)) return;
-				const classification = panel.querySelector('#inat-similar-classification');
-				if (!classification) return;
-				classification.innerHTML = classificationHtml;
+				currentClassificationHtml = classificationHtml;
+				currentClassificationTaxon = taxon;
+				watchClassificationPlacement(panel);
+				renderClassification(panel, classificationHtml, taxon);
 
 				if (!isSpeciesLevelTaxon(taxon)) {
 					const loading = panel.querySelector('.inat-similar-loading');
@@ -91,7 +108,6 @@
 
 				if (!results.length) {
 					panel.innerHTML = `
-						${classificationHtml}
 						<div class="inat-similar-header">
 							<h3>Commonly Confused Species</h3>
 							<p>These species are most frequently misidentified as the observed taxon on iNaturalist.</p>
@@ -100,6 +116,7 @@
 							No commonly confused species found for this taxon.
 						</div>
 					`;
+					renderClassification(panel, classificationHtml, taxon);
 					return;
 				}
 
@@ -135,13 +152,13 @@
 				gridHTML += '</ul>';
 
 				panel.innerHTML = `
-					${classificationHtml}
 					<div class="inat-similar-header">
 						<h3>Commonly Confused Species</h3>
 						<p>These species are most frequently misidentified as the observed taxon on iNaturalist.</p>
 					</div>
 					${gridHTML}
 				`;
+				renderClassification(panel, classificationHtml, taxon);
 
 				panel.querySelectorAll('.inat-similar-select-btn').forEach(btn => {
 					btn.addEventListener('click', event => {
@@ -175,6 +192,74 @@
 			return sequence === loadSequence
 				&& panel.isConnected
 				&& document.getElementById('inat-similar-section') === panel;
+		}
+
+		function removeEmbeddedClassification() {
+			document.querySelectorAll('.inat-inline-taxonomy[data-inat-embedded="true"]')
+				.forEach(element => element.remove());
+		}
+
+		function watchClassificationPlacement(panel) {
+			const root = panel.closest('.info-tab-inner');
+			if (!root) return;
+			if (classificationObserver && classificationObserver.root === root) return;
+			if (classificationObserver) classificationObserver.disconnect();
+
+			const observer = new MutationObserver(() => {
+				if (currentClassificationHtml && currentClassificationTaxon) {
+					relocateClassification(panel);
+				}
+			});
+			observer.root = root;
+			observer.observe(root, { childList: true, subtree: true });
+			classificationObserver = observer;
+		}
+
+		function findSuggestionCard(taxon) {
+			const cards = [...document.querySelectorAll('.ObservationModal .leading.panel.panel-default')];
+			const fallbackCards = [...document.querySelectorAll('.ObservationModal .ActivityItem.identification')];
+			const candidates = cards.length ? cards : fallbackCards;
+			if (!candidates.length) return null;
+
+			const taxonId = taxon?.id == null ? '' : String(taxon.id);
+			if (taxonId) {
+				const matchingCard = candidates.find(card => [...card.querySelectorAll('a[href]')]
+					.some(link => new URL(link.href, window.location.href).pathname.includes(`/taxa/${taxonId}`)));
+				if (matchingCard) return matchingCard;
+			}
+
+			return candidates.find(card => /suggested an id/i.test(card.textContent || '')) || candidates[0];
+		}
+
+		function renderClassification(panel, classificationHtml, taxon) {
+			currentClassificationHtml = classificationHtml;
+			currentClassificationTaxon = taxon;
+			relocateClassification(panel);
+		}
+
+		function relocateClassification(panel) {
+			if (!currentClassificationHtml || !currentClassificationTaxon || !panel.isConnected) return;
+			const modal = panel.closest('.ObservationModal');
+			if (!modal) return;
+
+			let classification = modal.querySelector('.inat-inline-taxonomy[data-inat-embedded="true"]');
+			if (!classification) {
+				const template = document.createElement('template');
+				template.innerHTML = currentClassificationHtml.trim();
+				classification = template.content.firstElementChild;
+				if (!classification) return;
+				classification.dataset.inatEmbedded = 'true';
+			}
+
+			const suggestionCard = findSuggestionCard(currentClassificationTaxon);
+			if (!suggestionCard) {
+				if (classification.parentElement !== panel) panel.insertBefore(classification, panel.firstChild);
+				return;
+			}
+
+			classification.classList.add('inat-inline-taxonomy--embedded');
+			const identification = suggestionCard.querySelector('.identification') || suggestionCard;
+			if (classification.parentElement !== identification) identification.appendChild(classification);
 		}
 
 		// ── Helpers ──────────────────────────────────────────────────────────
@@ -211,12 +296,18 @@
 				.map((taxon, index) => {
 					const label = taxon.preferred_common_name || taxon.name;
 					const separator = index ? '<span class="inat-classification-separator">›</span>' : '';
-					return `${separator}<a href="https://www.inaturalist.org/taxa/${taxon.id}" target="_blank" rel="noopener" title="${escapeHtml(taxon.name || label)}">${escapeHtml(label)}</a>`;
+					const photoUrl = taxon.default_photo
+						? getMediumPhotoUrl(taxon.default_photo.square_url || taxon.default_photo.medium_url || taxon.default_photo.url)
+						: '';
+					const photo = photoUrl
+						? `<img class="inat-inline-taxonomy-thumb" src="${photoUrl}" alt="" loading="lazy">`
+						: '<span class="inat-inline-taxonomy-thumb inat-inline-taxonomy-thumb--empty" aria-hidden="true"></span>';
+					return `${separator}<a class="inat-classification-taxon" href="https://www.inaturalist.org/taxa/${taxon.id}" target="_blank" rel="noopener" title="${escapeHtml(taxon.name || label)}">${photo}<span>${escapeHtml(label)}</span></a>`;
 				}).join('');
 
 			return `
-				<div class="inat-similar-classification">
-					<h3>Classification</h3>
+				<div class="inat-inline-taxonomy">
+					<div class="inat-inline-taxonomy-label">Classification</div>
 					<div class="inat-classification-path">${links}</div>
 				</div>
 			`;

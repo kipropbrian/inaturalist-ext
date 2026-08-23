@@ -15,6 +15,14 @@ assert.ok(
 	'Draft taxon events must be limited to identification forms, not taxon filters'
 );
 assert.ok(
+	domContext.includes("'assignSelection autocompleteselect'"),
+	'Draft taxon events must support both extension and native picker selections'
+);
+assert.ok(
+	domContext.includes('selectedTaxon?.item || ui?.item || selectedTaxon'),
+	'Native picker selections must read the taxon from ui.item'
+);
+assert.ok(
 	domContext.includes("new CustomEvent('inatExtDraftTaxonSelected'"),
 	'domContext.js must announce a taxon selected for an unsaved identification'
 );

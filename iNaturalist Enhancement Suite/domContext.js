@@ -570,20 +570,30 @@ function setReactTextareaValue(textarea, value) {
 
 function setupAssignSelectionListener() {
 	if (typeof window.$ === 'function') {
-		$(document).on('assignSelection', 'input[name="taxon_name"], input[type="search"]', function(e, selectedTaxon) {
-			if (!selectedTaxon) return;
+		$(document).on('assignSelection autocompleteselect', 'input[name="taxon_name"], input[type="search"]', function(e, selectedTaxon, ui) {
 			const input = this;
 			const form = input.closest('form');
 			const identificationForm = input.closest('.IdentificationForm');
+			// assignSelection supplies the Taxon model directly, while the native
+			// jQuery UI picker supplies it as ui.item. Support both paths.
+			const selectedCandidate = selectedTaxon?.item || ui?.item || selectedTaxon;
+			let draftTaxon = selectedCandidate && typeof selectedCandidate.toJSON === 'function'
+				? selectedCandidate.toJSON()
+				: selectedCandidate;
+			if (!draftTaxon?.id) {
+				const storedSelection = $(input).data('autocomplete-item');
+				draftTaxon = storedSelection && typeof storedSelection.toJSON === 'function'
+					? storedSelection.toJSON()
+					: storedSelection;
+			}
 			if (identificationForm) {
 				// The observation itself is unchanged until Save is clicked. Broadcast
 				// the draft selection so isolated-world features can react immediately.
-				const draftTaxon = typeof selectedTaxon.toJSON === 'function'
-					? selectedTaxon.toJSON()
-					: selectedTaxon;
-				document.dispatchEvent(new CustomEvent('inatExtDraftTaxonSelected', {
-					detail: { taxon: draftTaxon }
-				}));
+				if (draftTaxon?.id) {
+					document.dispatchEvent(new CustomEvent('inatExtDraftTaxonSelected', {
+						detail: { taxon: draftTaxon }
+					}));
+				}
 			}
 			if (form && currentInterceptedSpeciesGuess) {
 				const textarea = form.querySelector('textarea');
