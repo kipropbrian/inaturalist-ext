@@ -14,6 +14,7 @@ function saveOptions() {
     const enableQuickPlant = document.getElementById('quick-plant').checked;
     const enableSimilarSpeciesTab = document.getElementById('similar-species-tab').checked;
     const enableTaxonPhotosTab = document.getElementById('taxon-photos-tab').checked;
+    const enableIdentifyAutoPaging = document.getElementById('identify-auto-paging').checked;
     const enableLogging = document.getElementById('enable-logging').checked;
     chrome.storage.sync.set({
         enableColorVision,
@@ -31,6 +32,7 @@ function saveOptions() {
         enableQuickPlant,
         enableSimilarSpeciesTab,
         enableTaxonPhotosTab,
+        enableIdentifyAutoPaging,
         enableLogging
     }, function() {
         if (chrome.runtime.lastError) {
@@ -64,6 +66,7 @@ function restoreOptions() {
         enableQuickPlant: true,
         enableSimilarSpeciesTab: true,
         enableTaxonPhotosTab: true,
+        enableIdentifyAutoPaging: true,
         enableLogging: false
     }, function(items) {
         if (chrome.runtime.lastError) {
@@ -86,6 +89,7 @@ function restoreOptions() {
         document.getElementById('quick-plant').checked = items.enableQuickPlant;
         document.getElementById('similar-species-tab').checked = items.enableSimilarSpeciesTab;
         document.getElementById('taxon-photos-tab').checked = items.enableTaxonPhotosTab;
+        document.getElementById('identify-auto-paging').checked = items.enableIdentifyAutoPaging;
         colorVisionFeature.dispatchEvent(new Event('change'));
         scoreImageFeature.dispatchEvent(new Event('change'));
     });

@@ -11,7 +11,9 @@
 
 		let currentTaxon = null;
 		let currentPlaceId = null;
+		let currentObservationKey = null;
 		let loadSequence = 0;
+		let similarAbortController = null;
 		const taxonCache = new Map();
 		let currentClassificationHtml = '';
 		let currentClassificationTaxon = null;
@@ -21,10 +23,13 @@
 		document.addEventListener('observationFetch', event => {
 			const obs = event.detail.observation;
 			if (obs) {
+				const observationKey = `${obs.id || ''}:${obs.taxon?.id || ''}`;
+				const observationChanged = observationKey !== currentObservationKey;
+				currentObservationKey = observationKey;
 				currentTaxon = obs.taxon || null;
 				currentPlaceId = (obs.place_ids && obs.place_ids.length) ? obs.place_ids[0] : null;
 
-				if (document.getElementById('inat-similar-section')) {
+				if (observationChanged && document.getElementById('inat-similar-section')) {
 					loadSimilarSpecies();
 				}
 			}
@@ -58,6 +63,10 @@
 			const panel = document.getElementById('inat-similar-section');
 			if (!panel) return;
 			const sequence = ++loadSequence;
+			if (similarAbortController) similarAbortController.abort();
+			const requestController = new AbortController();
+			similarAbortController = requestController;
+			const { signal } = requestController;
 			const taxon = currentTaxon;
 			currentClassificationHtml = '';
 			currentClassificationTaxon = null;
@@ -75,6 +84,7 @@
 			`;
 
 			if (!taxon) {
+				similarAbortController = null;
 				panel.innerHTML = `
 					<div class="inat-similar-empty">
 						No classification is available because this observation is unidentified.
@@ -84,7 +94,7 @@
 			}
 
 			try {
-				const classificationHtml = await buildClassification(taxon);
+				const classificationHtml = await buildClassification(taxon, signal);
 				if (!isCurrentPanel(panel, sequence)) return;
 				currentClassificationHtml = classificationHtml;
 				currentClassificationTaxon = taxon;
@@ -102,7 +112,7 @@
 					return;
 				}
 
-				const data = await fetchSimilarSpecies(taxon.id);
+				const data = await fetchSimilarSpecies(taxon.id, signal);
 				if (!isCurrentPanel(panel, sequence)) return;
 				const results = data.results || [];
 
@@ -174,6 +184,7 @@
 
 
 			} catch (error) {
+				if (error.name === 'AbortError') return;
 				if (!isCurrentPanel(panel, sequence)) return;
 				console.error('[iNat Enhancement] Error loading similar species:', error);
 				panel.innerHTML = `
@@ -185,6 +196,8 @@
 						Failed to load similar species: ${escapeHtml(error.message || error)}
 					</div>
 				`;
+			} finally {
+				if (similarAbortController === requestController) similarAbortController = null;
 			}
 		}
 
@@ -264,14 +277,14 @@
 
 		// ── Helpers ──────────────────────────────────────────────────────────
 
-		async function fetchSimilarSpecies(taxonId) {
+		async function fetchSimilarSpecies(taxonId, signal) {
 			const key = `inat-similar-${taxonId}`;
 			const cached = await window.iNatCache.read(key);
 			if (cached) {
 				return cached;
 			}
 			const url = `https://api.inaturalist.org/v1/identifications/similar_species?taxon_id=${taxonId}`;
-			const response = await fetch(url);
+			const response = await fetch(url, { signal });
 			if (!response.ok) {
 				throw new Error(`API returned HTTP ${response.status}`);
 			}
@@ -285,11 +298,11 @@
 			return ['species', 'subspecies', 'variety', 'form', 'hybrid'].includes(taxon.rank);
 		}
 
-		async function buildClassification(compactTaxon) {
-			const fullTaxon = await fetchTaxa([compactTaxon.id]).then(taxa => taxa[0] || compactTaxon);
+		async function buildClassification(compactTaxon, signal) {
+			const fullTaxon = await fetchTaxa([compactTaxon.id], signal).then(taxa => taxa[0] || compactTaxon);
 			const ids = [...new Set([...(fullTaxon.ancestor_ids || []), fullTaxon.id])];
 			const missingIds = ids.filter(id => !taxonCache.has(String(id)));
-			if (missingIds.length) await fetchTaxa(missingIds);
+			if (missingIds.length) await fetchTaxa(missingIds, signal);
 
 			const links = ids.map(id => taxonCache.get(String(id)))
 				.filter(Boolean)
@@ -313,7 +326,7 @@
 			`;
 		}
 
-		async function fetchTaxa(ids) {
+		async function fetchTaxa(ids, signal) {
 			const results = [];
 			const missingFromL1 = [];
 
@@ -332,10 +345,12 @@
 			}
 
 			// Step 2: Check L2 persistent cache
+			const l2Entries = await Promise.all(missingFromL1.map(async id => ({
+				id,
+				cached: await window.iNatCache.read(`inat-taxon-${id}`)
+			})));
 			const missingFromL2 = [];
-			for (const id of missingFromL1) {
-				const key = `inat-taxon-${id}`;
-				const cached = await window.iNatCache.read(key);
+			for (const { id, cached } of l2Entries) {
 				if (cached) {
 					taxonCache.set(String(id), cached);
 					results.push(cached);
@@ -351,14 +366,15 @@
 			// Step 3: Fetch remaining from API in batches of 30
 			for (let index = 0; index < missingFromL2.length; index += 30) {
 				const batch = missingFromL2.slice(index, index + 30);
-				const response = await fetch(`https://api.inaturalist.org/v1/taxa/${batch.join(',')}`);
+				const response = await fetch(`https://api.inaturalist.org/v1/taxa/${batch.join(',')}`, { signal });
 				if (!response.ok) throw new Error(`Taxa API returned HTTP ${response.status}`);
 				const data = await response.json();
-				for (const taxon of data.results || []) {
+				const newTaxa = data.results || [];
+				for (const taxon of newTaxa) {
 					taxonCache.set(String(taxon.id), taxon);
 					results.push(taxon);
-					await window.iNatCache.write(`inat-taxon-${taxon.id}`, taxon);
 				}
+				await Promise.all(newTaxa.map(taxon => window.iNatCache.write(`inat-taxon-${taxon.id}`, taxon)));
 			}
 			return results;
 		}

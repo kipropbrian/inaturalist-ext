@@ -485,12 +485,18 @@ document.addEventListener('inatExtRequestDraftTaxon', () => {
 
 const oldFetch = window.fetch;
 window.fetch = async (url, options) => {
-	const response = await oldFetch(url, options);
+	const response = await oldFetch.call(window, url, options);
 	const requestUrl = typeof url === 'string' ? url : url && url.url;
-	try {
-		if (!requestUrl || !response.ok) return response;
+	if (requestUrl && response.ok) {
+		inspectFetchResponse(response, requestUrl, options).catch(err => {
+			console.debug('[iNat Enhancement] Skipped fetch response interception:', err);
+		});
+	}
+	return response;
+};
 
-		if (requestUrl.match(/^https:\/\/api\.inaturalist\.org\/v\d+\/computervision/i)) {
+async function inspectFetchResponse(response, requestUrl, options) {
+	if (requestUrl.match(/^https:\/\/api\.inaturalist\.org\/v\d+\/computervision/i)) {
 			const data = await readJsonResponse(response);
 			if (data) {
 				let filename = null;
@@ -537,12 +543,7 @@ window.fetch = async (url, options) => {
 				}
 			}
 		}
-	} catch (err) {
-		console.debug('[iNat Enhancement] Skipped fetch response interception:', err);
 	}
-
-	return response;
-};
 
 async function readJsonResponse(response) {
 	const contentType = response.headers.get('content-type') || '';

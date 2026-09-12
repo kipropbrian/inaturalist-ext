@@ -250,9 +250,6 @@ function getSelectedDetectorModel(modelId) {
 	return getDetectorModel();
 }
 
-// Start warming the detector immediately, while allowing detection requests to
-// await the same promise instead of failing during model compilation.
-getDetectorModel().catch(() => {});
 
 function createPlanarRgbInput(imageData) {
 	const width = imageData.width;

@@ -4,6 +4,7 @@ chrome.storage.sync.get({
 	enableCopyGeo: true,
 	enableIdentifierStats: true,
 	enableQuickPlant: true,
+	enableIdentifyAutoPaging: true,
 	enableLogging: false
 }, function(items) {
 	if (chrome.runtime.lastError) {
@@ -102,11 +103,10 @@ chrome.storage.sync.get({
 	injectHierarchyStyles();
 
 	if (window.location.pathname === '/observations/identify') {
-		enableIdentifyAutoPaging();
+		if (items.enableIdentifyAutoPaging) enableIdentifyAutoPaging();
 	}
 
 	function enableIdentifyAutoPaging() {
-		document.documentElement.style.overscrollBehaviorY = 'none';
 		let observedPagination = null;
 		let loadingPage = false;
 		let pageLoaded = false;
@@ -118,6 +118,8 @@ chrome.storage.sync.get({
 		let cooldownActive = false;
 		let cooldownSecondsLeft = 0;
 		let cooldownTimer = null;
+		let scrollFrame = null;
+		let paginationFrame = null;
 
 		const startCooldown = pagination => {
 			clearTimeout(cooldownTimer);
@@ -147,54 +149,23 @@ chrome.storage.sync.get({
 			cooldownSecondsLeft = 0;
 		};
 
-		const maybeLoadNextPage = event => {
-			if (loadingPage) {
-				event.preventDefault();
-				
-				// Keep resetting the lock release timer as long as wheel/swipe events continue
-				if (pageLoaded) {
-					clearTimeout(debounceTimer);
-					debounceTimer = setTimeout(() => {
-						loadingPage = false;
-						lastTriggeredPage = null;
-						document.documentElement.style.overflowY = '';
-						hideAutoPagingOverlay();
-						if (observedPagination) {
-							showAutoPagingStatus(observedPagination, cooldownActive ? `Auto-paging cooldown: ${cooldownSecondsLeft + 1}s` : 'Scroll beyond the bottom to load the next page');
-						}
-					}, 150);
-				}
-				return true;
-			}
-
-			if (cooldownActive) return false;
-
-			const deltaY = getWheelDeltaPixels(event);
-			if (deltaY <= 0) return false;
+		const maybeLoadNextPage = () => {
+			if (loadingPage || cooldownActive) return;
 
 			const pagination = observedPagination || document.querySelector('.PaginationControl .rc-pagination:not(.collapse)');
-			if (!pagination) return false;
+			if (!pagination) return;
 
-			const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-			const reachesBottom = window.scrollY + deltaY >= maxScrollY - 10;
-			if (!reachesBottom) return false;
+			const reachesBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 20;
+			if (!reachesBottom) return;
 
 			const currentPage = getCurrentIdentifyPage(pagination);
 			const nextItem = pagination.querySelector('li.rc-pagination-next[aria-disabled="false"]');
-			if (!nextItem || currentPage === lastTriggeredPage) return false;
-
-			event.preventDefault();
+			if (!nextItem || currentPage === lastTriggeredPage) return;
 
 			loadingPage = true;
 			pageLoaded = false;
 			lastTriggeredPage = currentPage;
 			lastGridSignature = getIdentifyGridSignature();
-
-			// Temporarily disable scroll to kill momentum scrolling and freeze page
-			document.documentElement.style.overflowY = 'hidden';
-
-			// Scroll immediately to top
-			window.scrollTo(0, 0);
 
 			showAutoPagingOverlay('Loading next page...');
 			showAutoPagingStatus(pagination, 'Loading next page...');
@@ -204,7 +175,6 @@ chrome.storage.sync.get({
 			fallbackTimer = setTimeout(() => {
 				loadingPage = false;
 				lastTriggeredPage = null;
-				document.documentElement.style.overflowY = '';
 				hideAutoPagingOverlay();
 				clearCooldown();
 				if (observedPagination) {
@@ -212,12 +182,15 @@ chrome.storage.sync.get({
 				}
 			}, 10000);
 
-			return true;
 		};
 
-		window.addEventListener('wheel', event => {
-			maybeLoadNextPage(event);
-		}, { passive: false });
+		window.addEventListener('scroll', () => {
+			if (scrollFrame !== null) return;
+			scrollFrame = requestAnimationFrame(() => {
+				scrollFrame = null;
+				maybeLoadNextPage();
+			});
+		}, { passive: true });
 
 		const watchPagination = () => {
 			const pagination = document.querySelector('.PaginationControl .rc-pagination:not(.collapse)');
@@ -246,7 +219,7 @@ chrome.storage.sync.get({
 						debounceTimer = setTimeout(() => {
 							loadingPage = false;
 							lastTriggeredPage = null;
-							document.documentElement.style.overflowY = '';
+							pageLoaded = false;
 							startCooldown(pagination);
 						}, 150);
 						lastActivePage = currentPage;
@@ -265,15 +238,22 @@ chrome.storage.sync.get({
 					debounceTimer = setTimeout(() => {
 						loadingPage = false;
 						lastTriggeredPage = null;
-						document.documentElement.style.overflowY = '';
 					}, 800);
 					lastActivePage = currentPage;
 				}
 			}
 		};
 
-		const pageObserver = new MutationObserver(watchPagination);
-		pageObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+		const schedulePaginationCheck = () => {
+			if (paginationFrame !== null) return;
+			paginationFrame = requestAnimationFrame(() => {
+				paginationFrame = null;
+				watchPagination();
+			});
+		};
+		const pageObserver = new MutationObserver(schedulePaginationCheck);
+		const identifyRoot = document.querySelector('#Identify') || document.body || document.documentElement;
+		pageObserver.observe(identifyRoot, { childList: true, subtree: true });
 		watchPagination();
 	}
 
@@ -285,15 +265,6 @@ chrome.storage.sync.get({
 			item.querySelector('a[href^="/observations/"]')?.getAttribute('href') || ''
 		)).filter(Boolean).join('|');
 	}
-
-
-
-	function getWheelDeltaPixels(event) {
-		if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * 16;
-		if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return event.deltaY * window.innerHeight;
-		return event.deltaY;
-	}
-
 	function getCurrentIdentifyPage(pagination) {
 		const activePage = pagination.querySelector('.rc-pagination-item-active');
 		return activePage ? activePage.textContent.trim() : null;
@@ -426,7 +397,7 @@ chrome.storage.sync.get({
 	});
 
 	// colorization
-	document.arrive('.TaxonAutocomplete > ul', ul => {
+	document.arrive('ul.ui-autocomplete.taxon-autocomplete', ul => {
 		// Ignore autocompletes belonging to filter popovers (e.g., Suggestions tab filters)
 		if (ul.closest('.TaxonChooserPopover, .RecordChooserPopover, .popover, .filters, #suggestions-taxon-chooser')) {
 			return;

@@ -452,7 +452,7 @@ if (globalThis.__INAT_PHOTOS_TEST__) {
 			const storedDraftTaxon = getStoredDraftTaxon();
 			if (storedDraftTaxon) setTaxon(storedDraftTaxon);
 			currentTabActive = true;
-			syncDraftTaxonFromInput();
+			if (!storedDraftTaxon) syncDraftTaxonFromInput();
 
 			// Make tab button active
 			const tabLi = document.getElementById('inat-taxon-photos-tab-li');
