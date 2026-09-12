@@ -740,10 +740,16 @@ chrome.storage.sync.get({
 			accent: { bg: '#f0f7e6', border: '#a4d257', hoverBg: '#e2f0cc', hoverBorder: '#7db53a', text: '#3d6b00' }
 		},
 		{
-			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/76692662/square.jpg',
-			label: 'Grasses',
-			taxon: { id: 47434, name: 'Poaceae', preferred_common_name: 'Grasses', rank: 'family', iconic_taxon_name: 'Plantae' },
+			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/54589881/square.jpg',
+			label: 'Grasses and allies',
+			taxon: { id: 47162, name: 'Poales', preferred_common_name: 'Grasses, Sedges, and Cattails', rank: 'order', iconic_taxon_name: 'Plantae' },
 			accent: { bg: '#edf4e3', border: '#92c347', hoverBg: '#e0ecce', hoverBorder: '#719f2d', text: '#365111' }
+		},
+		{
+			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/224614153/square.jpeg',
+			label: 'Acacia and allies',
+			taxon: { id: 373578, name: 'Mimosoideae', preferred_common_name: 'Acacias, Mimosas, Mesquites, and Allies', rank: 'subfamily', iconic_taxon_name: 'Plantae' },
+			accent: { bg: '#fbf7e8', border: '#d9bf65', hoverBg: '#f6eece', hoverBorder: '#bfa13b', text: '#5c480a' }
 		},
 		{
 			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/36127/square.jpg',

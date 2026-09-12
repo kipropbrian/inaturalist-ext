@@ -456,18 +456,31 @@ document.addEventListener('inatExtCloseTaxonAutocomplete', () => {
 	closeAllTaxonAutocompleteMenus();
 	scheduleTaxonAutocompleteCleanup();
 });
+
+function broadcastDraftTaxon(taxon) {
+	if (!taxon?.id) return;
+
+	const draftTaxon = typeof taxon.toJSON === 'function'
+		? taxon.toJSON()
+		: taxon;
+	try {
+		if (document.documentElement) {
+			document.documentElement.dataset.inatExtDraftTaxon = JSON.stringify(draftTaxon);
+		}
+	} catch (error) {
+		console.debug('[iNat Enhancement] Could not persist draft taxon:', error);
+	}
+	document.dispatchEvent(new CustomEvent('inatExtDraftTaxonSelected', {
+		detail: { taxon: draftTaxon }
+	}));
+}
+
 document.addEventListener('inatExtRequestDraftTaxon', () => {
 	if (typeof window.$ !== 'function') return;
 	const input = document.querySelector('.ObservationModal .IdentificationForm input[name="taxon_name"], .ObservationModal .IdentificationForm input[type="search"]');
 	if (!input) return;
-	const selectedTaxon = $(input).data('autocomplete-item');
-	if (!selectedTaxon?.id) return;
-	const draftTaxon = typeof selectedTaxon.toJSON === 'function'
-		? selectedTaxon.toJSON()
-		: selectedTaxon;
-	document.dispatchEvent(new CustomEvent('inatExtDraftTaxonSelected', {
-		detail: { taxon: draftTaxon }
-	}));
+	const selectedTaxon = $(input).data('autocomplete-item') || input.selection;
+	broadcastDraftTaxon(selectedTaxon);
 });
 
 const oldFetch = window.fetch;
@@ -581,7 +594,7 @@ function setupAssignSelectionListener() {
 				? selectedCandidate.toJSON()
 				: selectedCandidate;
 			if (!draftTaxon?.id) {
-				const storedSelection = $(input).data('autocomplete-item');
+				const storedSelection = $(input).data('autocomplete-item') || input.selection;
 				draftTaxon = storedSelection && typeof storedSelection.toJSON === 'function'
 					? storedSelection.toJSON()
 					: storedSelection;
@@ -589,11 +602,7 @@ function setupAssignSelectionListener() {
 			if (identificationForm) {
 				// The observation itself is unchanged until Save is clicked. Broadcast
 				// the draft selection so isolated-world features can react immediately.
-				if (draftTaxon?.id) {
-					document.dispatchEvent(new CustomEvent('inatExtDraftTaxonSelected', {
-						detail: { taxon: draftTaxon }
-					}));
-				}
+				broadcastDraftTaxon(draftTaxon);
 			}
 			if (form && currentInterceptedSpeciesGuess) {
 				const textarea = form.querySelector('textarea');

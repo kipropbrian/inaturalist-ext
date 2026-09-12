@@ -1,3 +1,15 @@
+function findExactPhotosTaxon(taxa, query) {
+	const needle = String(query || '').trim().toLocaleLowerCase();
+	if (!needle) return null;
+
+	return (taxa || []).find(taxon => [taxon.name, taxon.preferred_common_name]
+		.some(name => String(name || '').trim().toLocaleLowerCase() === needle)) || null;
+}
+
+if (globalThis.__INAT_PHOTOS_TEST__) {
+	globalThis.__INAT_PHOTOS_TEST__.helpers = { findExactPhotosTaxon };
+}
+
 (function () {
 	'use strict';
 
@@ -16,6 +28,9 @@
 		let hasMore = true;
 		let photosCtrl = null;
 		let tabObserver = null;
+		let draftTaxonCtrl = null;
+		let draftTaxonSyncTimer = null;
+		let draftTaxonSyncVersion = 0;
 
 		function isUsableTaxon(taxon) {
 			if (!taxon || taxon.id == null) return false;
@@ -54,6 +69,107 @@
 			}
 		}
 
+		function isDraftTaxonInput(input) {
+			return Boolean(input
+				&& input.matches('input[name="taxon_name"], input[type="search"]')
+				&& input.closest('.ObservationModal .IdentificationForm'));
+		}
+
+		function getDraftTaxonInput() {
+			return document.querySelector(
+				'.ObservationModal .IdentificationForm:not(.collapse) input[name="taxon_name"], '
+				+ '.ObservationModal .IdentificationForm:not(.collapse) input[type="search"]'
+			);
+		}
+
+		function getStoredDraftTaxon() {
+			const serializedTaxon = document.documentElement?.dataset.inatExtDraftTaxon;
+			if (!serializedTaxon) return null;
+			try {
+				const taxon = JSON.parse(serializedTaxon);
+				return taxon?.id != null ? taxon : null;
+			} catch (error) {
+				console.debug('[iNat Enhancement] Stored draft taxon was invalid:', error);
+				return null;
+			}
+		}
+
+		function scheduleDraftTaxonSync(delay = 0) {
+			clearTimeout(draftTaxonSyncTimer);
+			draftTaxonSyncTimer = setTimeout(() => {
+				draftTaxonSyncTimer = null;
+				syncDraftTaxonFromInput();
+			}, delay);
+		}
+
+		async function syncDraftTaxonFromInput() {
+			const syncVersion = ++draftTaxonSyncVersion;
+			const input = getDraftTaxonInput();
+			const query = input?.value?.trim();
+			if (!query) return;
+
+			if (draftTaxonCtrl) draftTaxonCtrl.abort();
+			draftTaxonCtrl = new AbortController();
+			const requestCtrl = draftTaxonCtrl;
+
+			try {
+				const params = new URLSearchParams({
+					q: query,
+					per_page: '10',
+					is_active: 'true'
+				});
+				const response = await fetch(`https://api.inaturalist.org/v1/taxa?${params}`, {
+					signal: requestCtrl.signal
+				});
+				if (!response.ok) return;
+
+				const data = await response.json();
+				const taxon = findExactPhotosTaxon(data.results, query);
+				const currentInput = getDraftTaxonInput();
+				const currentQuery = currentInput?.value?.trim();
+				if (!taxon || syncVersion !== draftTaxonSyncVersion) return;
+				// Switching to Photos blurs the native field, and iNaturalist may
+				// clear its displayed value before this API response returns. A
+				// different non-empty query still indicates a newer selection.
+				if (currentQuery && currentQuery !== query) return;
+
+				// Native iNat autocomplete selection is held in page-world state and
+				// is not consistently visible to the isolated-world event bridge.
+				// Resolving the displayed exact name keeps Photos in sync with what
+				// the user selected, without changing the identification form.
+				setTaxon(taxon);
+			} catch (error) {
+				if (error.name !== 'AbortError') {
+					console.debug('[iNat Enhancement] Draft taxon sync skipped:', error);
+				}
+			} finally {
+				if (draftTaxonCtrl === requestCtrl) draftTaxonCtrl = null;
+			}
+		}
+
+		// Native selections can arrive as input/change events, a jQuery UI
+		// autocomplete click, or keyboard selection. Cover all of those DOM
+		// paths in the isolated world, and also sync immediately when Photos opens.
+		document.addEventListener('input', event => {
+			if (isDraftTaxonInput(event.target)) scheduleDraftTaxonSync(250);
+		}, true);
+		document.addEventListener('change', event => {
+			if (isDraftTaxonInput(event.target)) scheduleDraftTaxonSync();
+		}, true);
+		document.addEventListener('blur', event => {
+			if (isDraftTaxonInput(event.target)) scheduleDraftTaxonSync();
+		}, true);
+		document.addEventListener('keydown', event => {
+			if (isDraftTaxonInput(event.target) && ['Enter', 'Tab'].includes(event.key)) {
+				scheduleDraftTaxonSync();
+			}
+		}, true);
+		document.addEventListener('click', event => {
+			if (event.target.closest('.ui-autocomplete.taxon-autocomplete .ac-result.taxon')) {
+				scheduleDraftTaxonSync();
+			}
+		}, true);
+
 		// ── Listen for observation fetch event ───────────────────────────────
 		document.addEventListener('observationFetch', event => {
 			const obs = event.detail.observation;
@@ -67,7 +183,13 @@
 		// saves. Use the selected draft taxon so Photos is available while they
 		// are still deciding whether to submit the identification.
 		document.addEventListener('inatExtDraftTaxonSelected', event => {
-			setTaxon(event.detail?.taxon);
+			let taxon = null;
+			try {
+				taxon = event.detail?.taxon;
+			} catch (error) {
+				console.debug('[iNat Enhancement] Draft taxon event detail was unavailable:', error);
+			}
+			setTaxon(taxon || getStoredDraftTaxon());
 		});
 
 		// ── Modal Arrive & Leave hooks ───────────────────────────────────────
@@ -78,6 +200,15 @@
 		document.leave('.ObservationModal', function () {
 			currentTabActive = false;
 			stopTabObserver();
+			draftTaxonSyncVersion += 1;
+			clearTimeout(draftTaxonSyncTimer);
+			if (draftTaxonCtrl) {
+				draftTaxonCtrl.abort();
+				draftTaxonCtrl = null;
+			}
+			if (document.documentElement) {
+				delete document.documentElement.dataset.inatExtDraftTaxon;
+			}
 			resetPhotos();
 		});
 
@@ -318,7 +449,10 @@
 			// autocomplete overlay from obscuring the photo gallery.
 			document.dispatchEvent(new CustomEvent('inatExtCloseTaxonAutocomplete'));
 			document.dispatchEvent(new CustomEvent('inatExtRequestDraftTaxon'));
+			const storedDraftTaxon = getStoredDraftTaxon();
+			if (storedDraftTaxon) setTaxon(storedDraftTaxon);
 			currentTabActive = true;
+			syncDraftTaxonFromInput();
 
 			// Make tab button active
 			const tabLi = document.getElementById('inat-taxon-photos-tab-li');
