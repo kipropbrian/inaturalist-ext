@@ -79,6 +79,14 @@ assert.ok(
 	'Photos must consume the DOM-backed draft taxon handoff'
 );
 assert.ok(
+	photosTab.includes('async function resolveObservationTaxon(observationId)'),
+	'Photos must recover an existing observation taxon when the observation event is unavailable'
+);
+assert.ok(
+	photosTab.includes('v1/observations/${encodeURIComponent(observationId)}'),
+	'Photos taxon fallback must query the current observation rather than guess from a suggested ID'
+);
+assert.ok(
 	photosTab.includes(".ui-autocomplete.taxon-autocomplete .ac-result.taxon"),
 	'Photos must react to native autocomplete selections'
 );
@@ -91,16 +99,20 @@ assert.ok(
 	'Reselecting the same taxon must preserve the already loaded Photos gallery'
 );
 assert.ok(
-	photosTab.includes("return typeof taxon.rank_level !== 'number' || taxon.rank_level <= 40;"),
-	'A selected taxon with an ID must work even when autocomplete omits rank_level'
+	photosTab.includes('return Boolean(taxon && taxon.id != null);'),
+	'Any selected taxon with an ID must be available to the Photos tab'
 );
 assert.ok(
 	photosTab.includes("document.arrive('.ObservationModal .sidebar', { existing: true }, function () {\n\t\t\tensureTabInjected();"),
 	'Photos must remain available even when the observation has no taxon'
 );
 assert.ok(
-	photosTab.includes('if (!currentTaxon) {\n\t\t\t\trenderTaxonUnavailable();\n\t\t\t\treturn;'),
+	photosTab.includes('if (!currentTaxon) {') && photosTab.includes('renderTaxonUnavailable();'),
 	'An unknown taxon must show an empty state without loading photos'
+);
+assert.ok(
+	photosTab.includes("document.addEventListener('inatExtObservationChanging'"),
+	'Photos must clear the previous observation taxon during modal navigation'
 );
 assert.ok(
 	photosTab.includes("new CustomEvent('inatExtCloseTaxonAutocomplete')"),

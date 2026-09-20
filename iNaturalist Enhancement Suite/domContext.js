@@ -19,12 +19,75 @@ FileReader.prototype.readAsDataURL = function(file) {
 	FileReader.prototype.readAsDataURLOriginal.apply(reader, arguments);
 }
 
+// On Identify, defer native modal photo downloads until the gallery marks a
+// slide active. iNaturalist creates the gallery images before their classes are
+// committed, so a later isolated-world MutationObserver is too late to prevent
+// the browser from starting inactive large-image requests.
+const IDENTIFY_EMPTY_IMAGE_SRC = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+const IDENTIFY_ORIGINAL_SRC_KEY = 'inatFastOriginalSrc';
+const IDENTIFY_ORIGINAL_SRCSET_KEY = 'inatFastOriginalSrcset';
+let identifyNavigationPending = false;
+let identifyNavigationTimer = null;
+const identifyPhotoSourcePattern = /(?:^|\/)photos\/\d+\/(?:square|small|medium|large|original)\.[^/?#]+(?:[?#].*)?$/i;
+
+function isIdentifyPhotoSource(value) {
+	return typeof value === 'string' && identifyPhotoSourcePattern.test(value);
+}
+
+function rememberIdentifyPhotoSource(image, attribute, value) {
+	if (!isIdentifyPhotoSource(value)) return;
+	if (attribute === 'src') image.dataset[IDENTIFY_ORIGINAL_SRC_KEY] = value;
+	if (attribute === 'srcset') image.dataset[IDENTIFY_ORIGINAL_SRCSET_KEY] = value;
+}
+
+function shouldDeferIdentifyPhoto(image, value) {
+	if (window.location.pathname !== '/observations/identify' || !isIdentifyPhotoSource(value)) return false;
+	// These are UI thumbnails, not gallery slides. They must remain visible when
+	// a reviewer selects a quick ID or when an identification is rendered.
+	if (image.matches?.('.taxon-image, .inat-quick-add-thumb')
+		|| image.closest?.('.inat-quick-add-thumb-wrap')) return false;
+	// The native gallery's square thumbnails are the lightweight visual index for
+	// the popup. Keep them available so reviewers can see the image count without
+	// downloading the inactive large gallery sources.
+	if (image.closest?.('.image-gallery-thumbnail')) return false;
+	const modal = image.closest?.('.ObservationModal');
+	// React assigns src while a new image is detached. Treat matching photo
+	// sources as deferred candidates until the gallery can identify the active
+	// slide after insertion.
+	if (!modal) return !image.isConnected;
+	const slide = image.closest('.image-gallery-slide');
+	const isActive = slide?.classList.contains('center')
+		|| slide?.getAttribute('aria-hidden') === 'false';
+	return identifyNavigationPending || !isActive;
+}
+
+function markIdentifyNavigationPending() {
+	if (window.location.pathname !== '/observations/identify') return;
+	identifyNavigationPending = true;
+	clearTimeout(identifyNavigationTimer);
+	identifyNavigationTimer = setTimeout(() => {
+		identifyNavigationPending = false;
+		identifyNavigationTimer = null;
+	}, 5000);
+}
+
+function settleIdentifyNavigation() {
+	identifyNavigationPending = false;
+	clearTimeout(identifyNavigationTimer);
+	identifyNavigationTimer = null;
+}
+
 // override Image.src setter to parse and store the filename from the data URL
 const srcDescriptor = Object.getOwnPropertyDescriptor(Image.prototype, 'src');
 Image.prototype.originalSrcSetter = srcDescriptor.set;
 
 const newSetter = function(value) {
-	const match = value.match(/;name=([^;]+);/);
+	if (shouldDeferIdentifyPhoto(this, value)) {
+		rememberIdentifyPhotoSource(this, 'src', value);
+		Image.prototype.originalSrcSetter.call(this, IDENTIFY_EMPTY_IMAGE_SRC);
+		return;
+	}
+	const match = typeof value === 'string' ? value.match(/;name=([^;]+);/) : null;
 	if (match) {
 		this._filename = match[1];
 	}
@@ -34,6 +97,22 @@ const newSetter = function(value) {
 
 srcDescriptor.set = newSetter;
 Object.defineProperty(Image.prototype, 'src', srcDescriptor);
+
+// React may use setAttribute instead of the src property depending on the
+// renderer path. Keep the interception limited to photo-like modal candidates
+// on the live Identify route; all other pages and image types are untouched.
+const originalElementSetAttribute = Element.prototype.setAttribute;
+Element.prototype.setAttribute = function(name, value) {
+	const attribute = String(name).toLowerCase();
+	if (this instanceof HTMLImageElement
+		&& (attribute === 'src' || attribute === 'srcset')
+		&& shouldDeferIdentifyPhoto(this, String(value))) {
+		rememberIdentifyPhotoSource(this, attribute, String(value));
+		originalElementSetAttribute.call(this, attribute, attribute === 'src' ? IDENTIFY_EMPTY_IMAGE_SRC : '');
+		return;
+	}
+	return originalElementSetAttribute.apply(this, arguments);
+};
 
 // override CanvasRenderingContext2D.drawImage to propagate image filename to canvas
 CanvasRenderingContext2D.prototype.drawImageOriginal = CanvasRenderingContext2D.prototype.drawImage;
@@ -149,7 +228,83 @@ document.addEventListener('scoreImageRequest', async (event) => {
 	}
 });
 
+let currentInterceptedObservationId = null;
 let currentInterceptedSpeciesGuess = null;
+let activeTaxonSelection = null;
+let taxonSelectionGeneration = 0;
+let currentGeneratedPlaceholder = null;
+let pendingPlaceholderObserver = null;
+let pendingPlaceholderTimer = null;
+
+// Content-script fallbacks may publish an observation event when the page uses
+// a cached response or a non-fetch request path. Keep the placeholder context
+// synchronized with both native and fallback observation events.
+document.addEventListener('observationFetch', event => {
+	const observation = event.detail?.observation;
+	if (!observation) return;
+	const observationId = event.detail.observationId || observation.id || null;
+	if (
+		currentInterceptedObservationId
+		&& observationId
+		&& String(currentInterceptedObservationId) !== String(observationId)
+	) {
+		// Some cached Identify transitions skip the native nav-button click path.
+		// Treat the new observation response as a lifecycle boundary so the old
+		// generated placeholder cannot leak into the reused form.
+		document.dispatchEvent(new CustomEvent('inatExtObservationChanging', {
+			detail: { observationId }
+		}));
+	}
+	currentInterceptedObservationId = observationId;
+	currentInterceptedSpeciesGuess = observation.taxon
+		? null
+		: (observation.species_guess || null);
+});
+
+function getObservationIdForElement(element) {
+	const modal = element?.closest?.('.ObservationModal')
+		|| findVisibleElement('.ObservationModal.in, .ObservationModal');
+	const href = modal?.querySelector(
+		'.obs-modal-header a[href^="/observations/"], a.permalink[href^="/observations/"]'
+	)?.getAttribute('href');
+	const match = href?.match(/^\/observations\/([^/?#]+)/);
+	return match ? match[1] : null;
+}
+
+function cancelActiveTaxonSelection() {
+	if (activeTaxonSelection) activeTaxonSelection.cancelled = true;
+	activeTaxonSelection = null;
+	taxonSelectionGeneration += 1;
+}
+
+function markObservationChanging() {
+	clearGeneratedPlaceholderComment();
+	if (pendingPlaceholderObserver) pendingPlaceholderObserver.disconnect();
+	clearTimeout(pendingPlaceholderTimer);
+	pendingPlaceholderObserver = null;
+	pendingPlaceholderTimer = null;
+	cancelActiveTaxonSelection();
+	markIdentifyNavigationPending();
+	currentInterceptedObservationId = null;
+	currentInterceptedSpeciesGuess = null;
+	if (document.documentElement) delete document.documentElement.dataset.inatExtDraftTaxon;
+	document.dispatchEvent(new CustomEvent('inatExtObservationChanging'));
+}
+
+function isCurrentTaxonSelection(selection) {
+	if (!selection || selection.cancelled || activeTaxonSelection !== selection) return false;
+	if (selection.generation !== taxonSelectionGeneration || !selection.input?.isConnected) return false;
+	if (selection.input.closest('.ObservationModal') !== selection.modal) return false;
+	return getObservationIdForElement(selection.input) === selection.observationId;
+}
+
+// Next/Previous and modal close can replace the form before taxon hydration
+// finishes. Cancel page-world work at the start of that transition so a late
+// selection cannot be assigned to the next observation's reused form.
+document.addEventListener('click', event => {
+	if (!event.target.closest?.('.ObservationModal .nav-buttons .nav-button')) return;
+	markObservationChanging();
+}, true);
 
 // Taxon suggestions arrive from several extension features with different API
 // field sets. Normalize them once here before handing them to iNaturalist.
@@ -191,6 +346,15 @@ async function hydrateTaxonForAutocomplete(taxon) {
 // Listen for taxon selection requests from content script
 document.addEventListener('selectTaxonRequest', async (event) => {
 	const { taxon, requestId, isIdentifyPage } = event.detail;
+	const selection = {
+		requestId,
+		generation: ++taxonSelectionGeneration,
+		input: null,
+		modal: null,
+		observationId: null,
+		cancelled: false
+	};
+	activeTaxonSelection = selection;
 
 	try {
 		const focused = document.activeElement;
@@ -217,15 +381,36 @@ document.addEventListener('selectTaxonRequest', async (event) => {
 		}
 
 		if (!input) throw new Error('Could not find the active identification input');
+		selection.input = input;
+		selection.modal = input.closest('.ObservationModal');
+		selection.observationId = getObservationIdForElement(input);
+		selection.speciesGuess = selection.observationId
+			&& String(selection.observationId) === String(currentInterceptedObservationId)
+			? currentInterceptedSpeciesGuess
+			: null;
 		const container = input.closest('.TaxonAutocomplete') || input.parentElement;
 		const hydratedTaxon = await hydrateTaxonForAutocomplete(taxon);
-		performAutocomplete(input, container, hydratedTaxon, requestId);
+		if (!isCurrentTaxonSelection(selection)) {
+			document.dispatchEvent(new CustomEvent('selectTaxonResponse', {
+				detail: { requestId, success: false, cancelled: true, error: 'Observation changed before taxon selection completed' }
+			}));
+			return;
+		}
+		performAutocomplete(input, container, hydratedTaxon, requestId, selection);
 
 	} catch (error) {
+		if (!isCurrentTaxonSelection(selection)) {
+			document.dispatchEvent(new CustomEvent('selectTaxonResponse', {
+				detail: { requestId, success: false, cancelled: true, error: 'Observation changed before taxon selection completed' }
+			}));
+			return;
+		}
 		console.error('[iNat Enhancement] selectTaxon error:', error);
 		document.dispatchEvent(new CustomEvent('selectTaxonResponse', {
 			detail: { requestId, success: false, error: error.message }
 		}));
+	} finally {
+		if (activeTaxonSelection === selection) activeTaxonSelection = null;
 	}
 });
 
@@ -338,9 +523,95 @@ function isVisibleElement(element) {
 	return element.getClientRects().length > 0;
 }
 
+function findCommentTextarea(input) {
+	const form = input?.closest?.('.IdentificationForm') || input?.closest?.('form');
+	return form?.querySelector('textarea[placeholder="Tell us why..."], textarea') || null;
+}
+
+function findCurrentIdentificationInput(observationId, fallbackInput) {
+	const candidates = [];
+	if (fallbackInput?.isConnected) candidates.push(fallbackInput);
+	const activeInput = findIdentificationInput(true);
+	if (activeInput && !candidates.includes(activeInput)) candidates.push(activeInput);
+	return candidates.find(input => {
+		const currentObservationId = getObservationIdForElement(input);
+		return currentObservationId && String(currentObservationId) === String(observationId);
+	}) || null;
+}
+
+function setPlaceholderComment(input, observationId, speciesGuess) {
+	if (!observationId || !speciesGuess) return false;
+	const currentInput = findCurrentIdentificationInput(observationId, input);
+	if (!currentInput) return false;
+
+	const textarea = findCommentTextarea(currentInput);
+	if (!textarea) return false;
+
+	const value = `Placeholder: ${speciesGuess}`;
+	const currentValue = textarea.value.trim();
+	const previousGeneratedValue = currentGeneratedPlaceholder?.value;
+	// Preserve a real comment, but replace an empty or extension-generated value
+	// left in iNaturalist's shared editor when the modal changes observations.
+	if (currentValue && currentValue !== previousGeneratedValue && !currentValue.startsWith('Placeholder: ')) {
+		return true;
+	}
+
+	if (currentValue !== value) setReactTextareaValue(textarea, value);
+	currentGeneratedPlaceholder = { observationId: String(observationId), value };
+	return true;
+}
+
+function queuePlaceholderComment(input, observationId, speciesGuess) {
+	if (!observationId || !speciesGuess) return;
+	if (setPlaceholderComment(input, observationId, speciesGuess)) return;
+
+	if (pendingPlaceholderObserver) pendingPlaceholderObserver.disconnect();
+	clearTimeout(pendingPlaceholderTimer);
+	const modal = input?.closest?.('.ObservationModal') || findVisibleElement('.ObservationModal');
+	const target = modal || document.body;
+	if (!target) return;
+
+	const attempt = () => {
+		if (setPlaceholderComment(input, observationId, speciesGuess)) {
+			pendingPlaceholderObserver?.disconnect();
+			clearTimeout(pendingPlaceholderTimer);
+			pendingPlaceholderObserver = null;
+			pendingPlaceholderTimer = null;
+		}
+	};
+	pendingPlaceholderObserver = new MutationObserver(attempt);
+	pendingPlaceholderObserver.observe(target, { childList: true, subtree: true });
+	pendingPlaceholderTimer = setTimeout(() => {
+		pendingPlaceholderObserver?.disconnect();
+		pendingPlaceholderObserver = null;
+		pendingPlaceholderTimer = null;
+	}, 2500);
+}
+
+function clearGeneratedPlaceholderComment() {
+	const activeInput = findVisibleElement('.ObservationModal .IdentificationForm input[name="taxon_name"]');
+	const textarea = findCommentTextarea(activeInput)
+		|| document.querySelector('.ObservationModal .IdentificationForm textarea[placeholder="Tell us why..."], .ObservationModal .IdentificationForm textarea');
+	if (!textarea) {
+		currentGeneratedPlaceholder = null;
+		return;
+	}
+	const currentValue = textarea.value.trim();
+	if (currentValue && (currentValue === currentGeneratedPlaceholder?.value || currentValue.startsWith('Placeholder: '))) {
+		setReactTextareaValue(textarea, '');
+	}
+	currentGeneratedPlaceholder = null;
+}
+
 // Extracted autocomplete logic for reuse
-function performAutocomplete(input, container, taxon, requestId) {
+function performAutocomplete(input, container, taxon, requestId, selection) {
 	try {
+		if (selection && !isCurrentTaxonSelection(selection)) {
+			document.dispatchEvent(new CustomEvent('selectTaxonResponse', {
+				detail: { requestId, success: false, cancelled: true, error: 'Observation changed before taxon selection completed' }
+			}));
+			return;
+		}
 		if (typeof window.$ !== 'function') {
 			throw new Error('iNaturalist autocomplete is not ready yet');
 		}
@@ -356,6 +627,9 @@ function performAutocomplete(input, container, taxon, requestId) {
 		// assignment. Besides storing the selection, that model supplies
 		// photoTag(), which renders the selected taxon's thumbnail.
 		$input.trigger('assignSelection', [selectedTaxon]);
+		// Programmatic Quick ID/Similar Species selections must preserve the
+		// unknown observation's species guess in the comment field too.
+		queuePlaceholderComment(input, selection?.observationId, selection?.speciesGuess);
 
 		const selected = $input.data('autocomplete-item');
 		if (!selected || Number(selected.id) !== Number(selectedTaxon.id)) {
@@ -364,7 +638,7 @@ function performAutocomplete(input, container, taxon, requestId) {
 
 		closeAutocompleteMenu($input, container);
 		input.blur();
-		container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		container.scrollIntoView({ block: 'center' });
 		document.dispatchEvent(new CustomEvent('selectTaxonResponse', {
 			detail: { requestId, success: true, taxonId: selected.id }
 		}));
@@ -448,6 +722,9 @@ document.addEventListener('click', event => {
 }, true);
 
 document.addEventListener('hidden.bs.modal', scheduleTaxonAutocompleteCleanup, true);
+document.addEventListener('hidden.bs.modal', event => {
+	if (event.target.closest?.('.ObservationModal')) markObservationChanging();
+}, true);
 
 // The Photos tab lives in an isolated extension world. Let it close an open
 // native autocomplete menu before hiding the identification form, and let it
@@ -484,15 +761,42 @@ document.addEventListener('inatExtRequestDraftTaxon', () => {
 });
 
 const oldFetch = window.fetch;
-window.fetch = async (url, options) => {
-	const response = await oldFetch.call(window, url, options);
+window.fetch = (url, options) => {
 	const requestUrl = typeof url === 'string' ? url : url && url.url;
-	if (requestUrl && response.ok) {
-		inspectFetchResponse(response, requestUrl, options).catch(err => {
-			console.debug('[iNat Enhancement] Skipped fetch response interception:', err);
+	const inspectableRequest = requestUrl && /^https:\/\/api\.inaturalist\.org\/v\d+\/(?:observations\/|computervision)/i.test(requestUrl);
+	const fetchPromise = oldFetch.call(window, url, options);
+	if (inspectableRequest) {
+		// Return the page's original promise immediately. Extension inspection is
+		// deliberately a side effect so React does not wait for clone/text/JSON work.
+		const inspect = response => {
+			if (!response.ok) return;
+			inspectFetchResponse(response, requestUrl, options).catch(err => {
+				console.debug('[iNat Enhancement] Skipped fetch response interception:', err);
+			});
+		};
+		fetchPromise.then(response => {
+			// Clone before the page's own continuation consumes the native response.
+			// Waiting until the setTimeout below to clone races React's JSON reader and
+			// silently prevents observationFetch, including placeholder propagation.
+			let inspectionResponse;
+			try {
+				inspectionResponse = response.clone();
+			} catch (error) {
+				console.debug('[iNat Enhancement] Could not clone fetch response for inspection:', error);
+				return;
+			}
+			if (window.location.pathname === '/observations/identify') {
+				// Let the native fetch continuation update the modal before extension
+				// clone/text/JSON work competes for the main thread.
+				setTimeout(() => inspect(inspectionResponse), 0);
+			} else {
+				inspect(inspectionResponse);
+			}
+		}, () => {
+			// Preserve the page's native rejection; there is nothing to inspect.
 		});
 	}
-	return response;
+	return fetchPromise;
 };
 
 async function inspectFetchResponse(response, requestUrl, options) {
@@ -526,14 +830,25 @@ async function inspectFetchResponse(response, requestUrl, options) {
 			// UUIDs (e.g. /v2/observations/de2a3f5c-2f45-46a5-925f-241ed6b945d3).
 			const observationMatch = requestUrl.match(/^https:\/\/api\.inaturalist\.org\/v\d+\/observations\/[\w-]+/i);
 			if (observationMatch) {
+				const requestedObservationId = observationMatch[0].split('/').pop();
+				const currentObservationId = getObservationIdForElement(null);
+				// Avoid cloning/parsing a response that is already stale before doing
+				// any extension work. Retain the post-parse check for races during IO.
+				if (currentObservationId && String(currentObservationId) !== String(requestedObservationId)) return;
 				const data = await readJsonResponse(response);
 				if (data && data.results && data.results.length && data.results[0]) {
 					const obs = data.results[0];
+					const observationId = obs.id || requestedObservationId;
+					const latestObservationId = getObservationIdForElement(null);
+					if (latestObservationId && String(latestObservationId) !== String(observationId)) return;
+					settleIdentifyNavigation();
+					currentInterceptedObservationId = observationId;
 					currentInterceptedSpeciesGuess = (!obs.taxon) ? (obs.species_guess || null) : null;
 					const payload = {
 						detail: {
 							location: obs.location,
-							observation: obs
+							observation: obs,
+							observationId
 						}
 					};
 
@@ -549,7 +864,7 @@ async function readJsonResponse(response) {
 	const contentType = response.headers.get('content-type') || '';
 	if (!contentType.includes('application/json')) return null;
 
-	const text = await response.clone().text();
+	const text = await response.text();
 	if (!text.trim()) return null;
 
 	return JSON.parse(text);
@@ -567,26 +882,25 @@ function setReactTextareaValue(textarea, value) {
 	).set;
 	nativeSetter.call(textarea, value);
 
-	// Step 2: Fire a React-compatible 'change' event.
-	//         This triggers TextEditor.textareaOnChange → setState({ content })
-	//         which keeps React's internal state in sync.
+	// Step 2: Fire React-compatible input/change events.
+	//         The input event updates the controlled editor state; change keeps
+	//         older iNat editor paths covered.
+	textarea.dispatchEvent(new Event('input', { bubbles: true }));
 	textarea.dispatchEvent(new Event('change', { bubbles: true }));
 
-	// Step 3: Fire a blur event after a short delay.
-	//         IdentificationForm's onBlur handler calls
+	// Step 3: Fire blur immediately while this observation's form is still
+	// mounted. IdentificationForm's onBlur handler calls
 	//         updateEditorContent("obsIdentifyIdComment", e.target.value)
 	//         which persists the value into the Redux store that the form
-	//         reads when the user clicks Save.
-	setTimeout(() => {
-		textarea.dispatchEvent(new Event('blur', { bubbles: true }));
-	}, 80);
+	//         reads when the user clicks Save. Delaying this across Next lets
+	//         the old form write into the next observation's shared editor.
+	textarea.dispatchEvent(new Event('blur', { bubbles: true }));
 }
 
 function setupAssignSelectionListener() {
 	if (typeof window.$ === 'function') {
 		$(document).on('assignSelection autocompleteselect', 'input[name="taxon_name"], input[type="search"]', function(e, selectedTaxon, ui) {
 			const input = this;
-			const form = input.closest('form');
 			const identificationForm = input.closest('.IdentificationForm');
 			// assignSelection supplies the Taxon model directly, while the native
 			// jQuery UI picker supplies it as ui.item. Support both paths.
@@ -605,12 +919,12 @@ function setupAssignSelectionListener() {
 				// the draft selection so isolated-world features can react immediately.
 				broadcastDraftTaxon(draftTaxon);
 			}
-			if (form && currentInterceptedSpeciesGuess) {
-				const textarea = form.querySelector('textarea');
-				if (textarea && !textarea.value.trim()) {
-					setReactTextareaValue(textarea, `Placeholder: ${currentInterceptedSpeciesGuess}`);
-				}
-			}
+			const observationId = getObservationIdForElement(input);
+			const speciesGuess = observationId
+				&& String(observationId) === String(currentInterceptedObservationId)
+				? currentInterceptedSpeciesGuess
+				: null;
+			queuePlaceholderComment(input, observationId, speciesGuess);
 		});
 	} else {
 		setTimeout(setupAssignSelectionListener, 100);

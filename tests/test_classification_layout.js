@@ -7,6 +7,7 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const extensionDir = join(testDir, '..', 'iNaturalist Enhancement Suite');
 const similarScript = fs.readFileSync(join(extensionDir, 'content-identify-similar.js'), 'utf8');
 const similarCss = fs.readFileSync(join(extensionDir, 'similar-species.css'), 'utf8');
+const cacheScript = fs.readFileSync(join(extensionDir, 'cache.js'), 'utf8');
 
 console.log('Running classification layout regression tests...');
 
@@ -33,6 +34,20 @@ assert.ok(
 assert.ok(
 	similarScript.includes('new MutationObserver') && similarScript.includes('relocateClassification(panel)'),
 	'Classification must relocate when the native leading panel renders later'
+);
+assert.ok(
+	similarScript.includes('loadSimilarSpecies({ includeSimilar: false })')
+		&& similarScript.includes('relocateClassification(panel)'),
+	'Classification must load lazily when the active suggestion panel settles'
+);
+assert.ok(
+	similarScript.includes('const classificationKey = `inat-classification-${compactTaxon.id}`')
+		&& similarScript.includes('await window.iNatCache.write(classificationKey'),
+	'Classification trees must use a persistent tree cache'
+);
+assert.ok(
+	cacheScript.includes("'inat-classification-': 365 * 24 * 60 * 60 * 1000"),
+	'Classification tree cache must be long lived'
 );
 assert.ok(
 	similarCss.includes('.inat-inline-taxonomy--embedded'),

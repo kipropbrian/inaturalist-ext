@@ -38,4 +38,24 @@ assert.strictEqual(acacias.taxon.preferred_common_name, 'Acacias, Mimosas, Mesqu
 assert.strictEqual(acacias.taxon.iconic_taxon_name, 'Plantae', 'Iconic taxon name must be "Plantae"');
 assert.ok(acacias.photoUrl.includes('224614153'), 'Photo URL should match Mimosoideae default photo');
 
+// Test: Solanaceae (family) must be present with label "Nightshades"
+const nightshades = taxa.find(t => t.taxon?.id === 48516);
+assert.ok(nightshades, 'Family Solanaceae (id 48516) must be present in QUICK_ADD_TAXA');
+assert.strictEqual(nightshades.label, 'Nightshades', 'Label must be "Nightshades"');
+assert.strictEqual(nightshades.taxon.name, 'Solanaceae', 'Taxon name must be "Solanaceae"');
+assert.strictEqual(nightshades.taxon.rank, 'family', 'Taxon rank must be "family"');
+assert.strictEqual(nightshades.taxon.preferred_common_name, 'nightshade family', 'Preferred common name must match "nightshade family"');
+assert.strictEqual(nightshades.taxon.iconic_taxon_name, 'Plantae', 'Iconic taxon name must be "Plantae"');
+assert.ok(nightshades.photoUrl.includes('4608305'), 'Photo URL should match Solanaceae default photo');
+
+// Test: Ipomoea (genus) must be present with label "Morning Glories"
+const ipomoea = taxa.find(t => t.taxon?.id === 52346);
+assert.ok(ipomoea, 'Genus Ipomoea (id 52346) must be present in QUICK_ADD_TAXA');
+assert.strictEqual(ipomoea.label, 'Morning Glories', 'Label must be "Morning Glories"');
+assert.strictEqual(ipomoea.taxon.name, 'Ipomoea', 'Taxon name must be "Ipomoea"');
+assert.strictEqual(ipomoea.taxon.rank, 'genus', 'Taxon rank must be "genus"');
+assert.strictEqual(ipomoea.taxon.preferred_common_name, 'morning-glories', 'Preferred common name must match "morning-glories"');
+assert.strictEqual(ipomoea.taxon.iconic_taxon_name, 'Plantae', 'Iconic taxon name must be "Plantae"');
+assert.ok(ipomoea.photoUrl.includes('149905022'), 'Photo URL should match Ipomoea default photo');
+
 console.log('✅ All Quick ID options regression tests passed successfully!');

@@ -14,6 +14,7 @@ settings in `chrome.storage.sync`. It does not require a build step.
 - **Quick Add Plant Button:** Add flora identifications quickly with a "Quick Plant" action button next to the taxon input field.
 - **Similar Species Selection Buttons:** Add selection and identify buttons directly onto similar species list items/cards.
 - **Identify Page Paging Cooldown:** Prevent double loading and infinite scroll bugs with a visual loading overlay and pagination cooldown.
+- **Fast Identify Review:** Reduce modal transition work by pausing nonessential extension panels, prioritizing the active photo, and protecting per-observation draft state while moving through unknowns.
 - Score observation images with iNaturalist computer vision.
 - Crop part of an image before requesting computer-vision suggestions.
 - Show linked taxonomic hierarchies for computer-vision suggestions and

@@ -14,6 +14,7 @@
 	const TTL_MAP = {
 		'inat-cv-score-': 1 * 24 * 60 * 60 * 1000,    // 1 day
 		'inat-cv-crop-': 1 * 24 * 60 * 60 * 1000,     // 1 day
+		'inat-classification-': 365 * 24 * 60 * 60 * 1000, // 1 year
 		'inat-taxon-': 30 * 24 * 60 * 60 * 1000,      // 30 days
 		'inat-userstats-': 1 * 24 * 60 * 60 * 1000,   // 1 day
 		'inat-taxacount-': 1 * 24 * 60 * 60 * 1000,   // 1 day

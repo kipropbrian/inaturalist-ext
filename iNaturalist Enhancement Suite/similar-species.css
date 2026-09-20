@@ -129,6 +129,35 @@
 	to { transform: rotate(360deg); }
 }
 
+.inat-similar-prompt {
+	padding: 16px;
+	border: 1px solid #e3e8dc;
+	border-radius: 8px;
+	background: #fbfdf9;
+	text-align: center;
+}
+
+.inat-similar-prompt p {
+	margin: 0 0 12px;
+	color: #666;
+	font-size: 12px;
+}
+
+.inat-load-similar-btn {
+	padding: 7px 12px;
+	border: 1px solid #74ac00;
+	border-radius: 5px;
+	background: #f1f8e8;
+	color: #4f7200;
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.inat-load-similar-btn:hover {
+	background: #e3f0d2;
+}
+
 /* ── Error & Empty State ─────────────────────────────────────────────────── */
 
 .inat-similar-error,

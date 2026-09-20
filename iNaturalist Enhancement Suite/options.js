@@ -15,6 +15,7 @@ function saveOptions() {
     const enableSimilarSpeciesTab = document.getElementById('similar-species-tab').checked;
     const enableTaxonPhotosTab = document.getElementById('taxon-photos-tab').checked;
     const enableIdentifyAutoPaging = document.getElementById('identify-auto-paging').checked;
+    const enableIdentifyFastReview = document.getElementById('identify-fast-review').checked;
     const enableLogging = document.getElementById('enable-logging').checked;
     chrome.storage.sync.set({
         enableColorVision,
@@ -33,6 +34,7 @@ function saveOptions() {
         enableSimilarSpeciesTab,
         enableTaxonPhotosTab,
         enableIdentifyAutoPaging,
+        enableIdentifyFastReview,
         enableLogging
     }, function() {
         if (chrome.runtime.lastError) {
@@ -67,6 +69,7 @@ function restoreOptions() {
         enableSimilarSpeciesTab: true,
         enableTaxonPhotosTab: true,
         enableIdentifyAutoPaging: true,
+        enableIdentifyFastReview: true,
         enableLogging: false
     }, function(items) {
         if (chrome.runtime.lastError) {
@@ -90,6 +93,7 @@ function restoreOptions() {
         document.getElementById('similar-species-tab').checked = items.enableSimilarSpeciesTab;
         document.getElementById('taxon-photos-tab').checked = items.enableTaxonPhotosTab;
         document.getElementById('identify-auto-paging').checked = items.enableIdentifyAutoPaging;
+        document.getElementById('identify-fast-review').checked = items.enableIdentifyFastReview;
         colorVisionFeature.dispatchEvent(new Event('change'));
         scoreImageFeature.dispatchEvent(new Event('change'));
     });

@@ -27,17 +27,18 @@ if (globalThis.__INAT_PHOTOS_TEST__) {
 		let isLoading = false;
 		let hasMore = true;
 		let photosCtrl = null;
-		let tabObserver = null;
-		let draftTaxonCtrl = null;
-		let draftTaxonSyncTimer = null;
-		let draftTaxonSyncVersion = 0;
+			let tabObserver = null;
+			let draftTaxonCtrl = null;
+			let draftTaxonSyncTimer = null;
+			let draftTaxonSyncVersion = 0;
+			let observationTaxonCtrl = null;
+			let observationTaxonRequestVersion = 0;
 
 		function isUsableTaxon(taxon) {
-			if (!taxon || taxon.id == null) return false;
-			// iNaturalist's selected autocomplete model can omit rank_level even
-			// for a species. A known taxon ID is sufficient to request its photos;
-			// retain the existing broad-taxon guard when rank_level is supplied.
-			return typeof taxon.rank_level !== 'number' || taxon.rank_level <= 40;
+			// The observations endpoint accepts every active taxon rank. A known
+			// taxon ID is enough to browse photos, including broad IDs such as a
+			// class, order, or phylum.
+			return Boolean(taxon && taxon.id != null);
 		}
 
 		function setTaxon(taxon, { forceRefresh = false } = {}) {
@@ -58,7 +59,7 @@ if (globalThis.__INAT_PHOTOS_TEST__) {
 				}
 			} else {
 				// Keep Photos visible even when there is no usable taxon, but do not
-				// request photos for an unknown or above-order identification.
+				// request photos until an observation or draft taxon is known.
 				currentTaxon = null;
 				ensureTabInjected();
 				resetPhotos();
@@ -94,7 +95,52 @@ if (globalThis.__INAT_PHOTOS_TEST__) {
 			}
 		}
 
+		function getModalObservationId() {
+			const modal = document.querySelector('.ObservationModal.in, .ObservationModal');
+			const href = modal?.querySelector(
+				'.obs-modal-header a[href^="/observations/"], a.permalink[href^="/observations/"]'
+			)?.getAttribute('href');
+			const match = href?.match(/^\/observations\/([^/?#]+)/);
+			return match ? match[1] : null;
+		}
+
+		function cancelObservationTaxonLookup() {
+			observationTaxonRequestVersion += 1;
+			if (observationTaxonCtrl) {
+				observationTaxonCtrl.abort();
+				observationTaxonCtrl = null;
+			}
+		}
+
+		async function resolveObservationTaxon(observationId) {
+			if (!observationId) return null;
+			cancelObservationTaxonLookup();
+			const requestVersion = observationTaxonRequestVersion;
+			const requestCtrl = new AbortController();
+			observationTaxonCtrl = requestCtrl;
+			try {
+				const response = await fetch(
+					`https://api.inaturalist.org/v1/observations/${encodeURIComponent(observationId)}`,
+					{ signal: requestCtrl.signal }
+				);
+				if (!response.ok) throw new Error(`API returned HTTP ${response.status}`);
+				const data = await response.json();
+				if (requestVersion !== observationTaxonRequestVersion || getModalObservationId() !== String(observationId)) {
+					return null;
+				}
+				return data.results?.[0]?.taxon || null;
+			} catch (error) {
+				if (error.name !== 'AbortError') {
+					console.debug('[iNat Enhancement] Observation taxon fallback skipped:', error);
+				}
+				return null;
+			} finally {
+				if (observationTaxonCtrl === requestCtrl) observationTaxonCtrl = null;
+			}
+		}
+
 		function scheduleDraftTaxonSync(delay = 0) {
+			if (!currentTabActive) return;
 			clearTimeout(draftTaxonSyncTimer);
 			draftTaxonSyncTimer = setTimeout(() => {
 				draftTaxonSyncTimer = null;
@@ -151,33 +197,45 @@ if (globalThis.__INAT_PHOTOS_TEST__) {
 		// autocomplete click, or keyboard selection. Cover all of those DOM
 		// paths in the isolated world, and also sync immediately when Photos opens.
 		document.addEventListener('input', event => {
-			if (isDraftTaxonInput(event.target)) scheduleDraftTaxonSync(250);
+			if (currentTabActive && isDraftTaxonInput(event.target)) scheduleDraftTaxonSync(250);
 		}, true);
 		document.addEventListener('change', event => {
-			if (isDraftTaxonInput(event.target)) scheduleDraftTaxonSync();
+			if (currentTabActive && isDraftTaxonInput(event.target)) scheduleDraftTaxonSync();
 		}, true);
 		document.addEventListener('blur', event => {
-			if (isDraftTaxonInput(event.target)) scheduleDraftTaxonSync();
+			if (currentTabActive && isDraftTaxonInput(event.target)) scheduleDraftTaxonSync();
 		}, true);
 		document.addEventListener('keydown', event => {
-			if (isDraftTaxonInput(event.target) && ['Enter', 'Tab'].includes(event.key)) {
+			if (currentTabActive && isDraftTaxonInput(event.target) && ['Enter', 'Tab'].includes(event.key)) {
 				scheduleDraftTaxonSync();
 			}
 		}, true);
 		document.addEventListener('click', event => {
-			if (event.target.closest('.ui-autocomplete.taxon-autocomplete .ac-result.taxon')) {
+			if (currentTabActive && event.target.closest('.ui-autocomplete.taxon-autocomplete .ac-result.taxon')) {
 				scheduleDraftTaxonSync();
 			}
 		}, true);
 
 		// ── Listen for observation fetch event ───────────────────────────────
-		document.addEventListener('observationFetch', event => {
-			const obs = event.detail.observation;
-			if (!obs) return;
+			document.addEventListener('observationFetch', event => {
+				const obs = event.detail.observation;
+				if (!obs) return;
 
-			currentObservationId = obs.id || null;
-			setTaxon(obs.taxon, { forceRefresh: true });
-		});
+				cancelObservationTaxonLookup();
+				currentObservationId = obs.id || null;
+				setTaxon(obs.taxon, { forceRefresh: true });
+			});
+
+			document.addEventListener('inatExtObservationChanging', () => {
+				cancelObservationTaxonLookup();
+				currentObservationId = null;
+				currentTaxon = null;
+				resetPhotos();
+				if (currentTabActive) {
+					updateHeaderDetails();
+					renderTaxonLoading();
+				}
+			});
 
 		// iNaturalist does not update the observation taxon until the identifier
 		// saves. Use the selected draft taxon so Photos is available while they
@@ -197,9 +255,10 @@ if (globalThis.__INAT_PHOTOS_TEST__) {
 			ensureTabInjected();
 		});
 
-		document.leave('.ObservationModal', function () {
-			currentTabActive = false;
-			stopTabObserver();
+			document.leave('.ObservationModal', function () {
+				currentTabActive = false;
+				stopTabObserver();
+				cancelObservationTaxonLookup();
 			draftTaxonSyncVersion += 1;
 			clearTimeout(draftTaxonSyncTimer);
 			if (draftTaxonCtrl) {
@@ -451,6 +510,8 @@ if (globalThis.__INAT_PHOTOS_TEST__) {
 			document.dispatchEvent(new CustomEvent('inatExtRequestDraftTaxon'));
 			const storedDraftTaxon = getStoredDraftTaxon();
 			if (storedDraftTaxon) setTaxon(storedDraftTaxon);
+			const modalObservationId = getModalObservationId();
+			if (modalObservationId) currentObservationId = modalObservationId;
 			currentTabActive = true;
 			if (!storedDraftTaxon) syncDraftTaxonFromInput();
 
@@ -472,7 +533,17 @@ if (globalThis.__INAT_PHOTOS_TEST__) {
 			if (modal) modal.classList.add('inat-custom-tab-active');
 
 			if (!currentTaxon) {
-				renderTaxonUnavailable();
+				renderTaxonLoading();
+				const observationId = currentObservationId || getModalObservationId();
+				if (observationId) {
+					resolveObservationTaxon(observationId).then(taxon => {
+						if (!currentTabActive || String(currentObservationId) !== String(observationId)) return;
+						setTaxon(taxon);
+						if (!taxon) renderTaxonUnavailable();
+					});
+				} else {
+					renderTaxonUnavailable();
+				}
 				return;
 			}
 
@@ -694,6 +765,13 @@ if (globalThis.__INAT_PHOTOS_TEST__) {
 			const grid = panel?.querySelector('.taxon-photos-grid');
 			if (!grid) return;
 			grid.innerHTML = '<li style="grid-column: span 3;"><div class="taxon-photos-empty"><strong>Select a species to view photos</strong>Photos will load here after you choose a taxon.</div></li>';
+		}
+
+		function renderTaxonLoading() {
+			const panel = document.getElementById('inat-taxon-photos-panel');
+			const grid = panel?.querySelector('.taxon-photos-grid');
+			if (!grid) return;
+			grid.innerHTML = '<li style="grid-column: span 3;"><div class="taxon-photos-empty"><strong>Loading observation taxon…</strong>Fetching the current identification.</div></li>';
 		}
 
 		function updatePaginationControls(panel) {

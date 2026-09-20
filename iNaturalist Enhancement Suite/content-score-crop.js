@@ -2,9 +2,9 @@
 // Adds buttons to observation photos for getting computer vision suggestions
 
 chrome.storage.sync.get({
-	enableScoreImageTools: true,
-	scoreImagePosition: 'below',
-	scoreImageColor: 'outlined'
+		enableScoreImageTools: true,
+		scoreImagePosition: 'below',
+		scoreImageColor: 'outlined'
 }, function(items) {
 	if (chrome.runtime.lastError) {
 		console.error('[iNat Enhancement Suite] Failed to load settings from storage:', chrome.runtime.lastError.message);
@@ -13,7 +13,6 @@ chrome.storage.sync.get({
 	if (!items || !items.enableScoreImageTools) {
 		return;
 	}
-
 	const buttonPosition = items.scoreImagePosition;
 	const buttonColor = items.scoreImageColor;
 
@@ -913,6 +912,13 @@ chrome.storage.sync.get({
 		log('Observation location updated:', lastObservationLocation);
 	});
 
+	document.addEventListener('inatExtObservationChanging', () => {
+		closeScoreResults();
+		closeCropModal();
+		lastObservation = null;
+		lastObservationLocation = null;
+	});
+
 	// Ensure modal exists and event listeners are set up
 	function ensureModalExists() {
 		if (!modal) {
@@ -1373,6 +1379,7 @@ chrome.storage.sync.get({
 			function handleResponse(event) {
 				if (event.detail.requestId !== requestId) return;
 				document.removeEventListener('selectTaxonResponse', handleResponse);
+				if (event.detail.cancelled) return;
 
 				if (event.detail.success) {
 					log('Taxon selection applied:', taxon.name);

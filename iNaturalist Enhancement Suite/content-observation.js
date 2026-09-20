@@ -1,3 +1,101 @@
+let currentIdentifyObservationState = 'pending';
+let currentIdentifyObservationId = null;
+let currentTaxon = null;
+let currentSpeciesGuess = null;
+let handleObservationFetch = null;
+let handleObservationChanging = null;
+let bufferedObservationFetchEvent = null;
+let observationFallbackSequence = 0;
+let observationFallbackTimer = null;
+let observationFallbackController = null;
+
+function getCurrentModalObservationId() {
+	const modal = document.querySelector('.ObservationModal.in, .ObservationModal');
+	const href = modal?.querySelector(
+		'.obs-modal-header a[href^="/observations/"], a.permalink[href^="/observations/"]'
+	)?.getAttribute('href');
+	const match = href?.match(/^\/observations\/([^/?#]+)/);
+	return match ? match[1] : null;
+}
+
+function cancelObservationStateFallback() {
+	observationFallbackSequence += 1;
+	clearTimeout(observationFallbackTimer);
+	observationFallbackTimer = null;
+	if (observationFallbackController) observationFallbackController.abort();
+	observationFallbackController = null;
+}
+
+function scheduleObservationStateFallback(delay = 350) {
+	if (currentIdentifyObservationState !== 'pending') return;
+	const observationId = getCurrentModalObservationId();
+	if (!observationId) return;
+	clearTimeout(observationFallbackTimer);
+	const sequence = ++observationFallbackSequence;
+	observationFallbackTimer = setTimeout(async () => {
+		observationFallbackTimer = null;
+		if (sequence !== observationFallbackSequence || currentIdentifyObservationState !== 'pending') return;
+
+		const controller = new AbortController();
+		observationFallbackController = controller;
+		try {
+			const response = await fetch(
+				`https://api.inaturalist.org/v1/observations/${encodeURIComponent(observationId)}`,
+				{ signal: controller.signal }
+			);
+			if (!response.ok) return;
+			const data = await response.json();
+			const observation = data.results?.[0];
+			if (!observation || sequence !== observationFallbackSequence) return;
+			if (String(getCurrentModalObservationId()) !== String(observation.id || observationId)) return;
+	document.dispatchEvent(new CustomEvent('observationFetch', {
+				detail: {
+					location: observation.location,
+					observation,
+					observationId: observation.id || observationId,
+					fallback: true
+				}
+			}));
+		} catch (error) {
+			if (error.name !== 'AbortError') {
+				console.debug('[iNat Enhancement] Observation state fallback skipped:', error);
+			}
+		} finally {
+			if (observationFallbackController === controller) observationFallbackController = null;
+		}
+	}, delay);
+}
+
+// Settings storage is asynchronous and iNaturalist may fetch a cached
+// observation before its callback runs. Keep the lifecycle event synchronous so
+// Quick ID, classification, and placeholder state cannot remain stuck at
+// "pending" after a fast modal load.
+document.addEventListener('observationFetch', event => {
+	cancelObservationStateFallback();
+	const obs = event.detail?.observation;
+	currentIdentifyObservationId = event.detail?.observationId || obs?.id || null;
+	currentTaxon = obs ? (obs.taxon || null) : null;
+	currentSpeciesGuess = obs ? (obs.species_guess || null) : null;
+	currentIdentifyObservationState = obs
+		? (obs.taxon ? 'identified' : 'unknown')
+		: 'pending';
+	if (handleObservationFetch) {
+		handleObservationFetch(event);
+	} else {
+		bufferedObservationFetchEvent = event;
+	}
+});
+
+document.addEventListener('inatExtObservationChanging', () => {
+	cancelObservationStateFallback();
+	bufferedObservationFetchEvent = null;
+	currentIdentifyObservationId = null;
+	currentTaxon = null;
+	currentSpeciesGuess = null;
+	currentIdentifyObservationState = 'pending';
+	if (handleObservationChanging) handleObservationChanging();
+});
+
 chrome.storage.sync.get({
 	enableColorVision: true,
 	enableCVPercentages: true,
@@ -5,6 +103,7 @@ chrome.storage.sync.get({
 	enableIdentifierStats: true,
 	enableQuickPlant: true,
 	enableIdentifyAutoPaging: true,
+	enableIdentifyFastReview: true,
 	enableLogging: false
 }, function(items) {
 	if (chrome.runtime.lastError) {
@@ -14,54 +113,83 @@ chrome.storage.sync.get({
 	// Use shared logging from logging.js
 	const logDebug = window.iNatLogDebug || console.debug;
 	const log = window.iNatLog || console.log;
+	const identifyFastReview = window.location.pathname === '/observations/identify'
+		&& items.enableIdentifyFastReview !== false;
 
 	const DEFAULT_KEY_NAME = 'default';
 	const FLAG_CLASS = 'expanded';
+	let updateIdentifyFastReviewMode = () => {};
+	let refreshIdentifierStats = () => {};
+	let refreshIdentifyColorization = () => {};
+	const shouldDeferFastIdentifyEnhancements = () => (
+		identifyFastReview && currentIdentifyObservationState !== 'identified'
+	);
+	const shouldShowMainCvHierarchy = () => {
+		// Main CV hierarchy rows are useful on identified observations, but they
+		// add work to the unknown fast-review path where the reviewer is moving
+		// quickly and has no confirmed taxon to inspect.
+		if (currentIdentifyObservationState === 'unknown') return false;
+		return window.location.pathname !== '/observations/identify'
+			|| currentIdentifyObservationState === 'identified';
+	};
 
 	logDebug('Settings loaded:', items);
 
-	if (items.enableIdentifierStats) {
-		document.arrive('.ActivityItem.identification', async div => {
-			const userAnchor = div.querySelector('a.user')
-			const taxonAnchor = div.querySelector('.taxon > a')
-			if (userAnchor && taxonAnchor) {
-				const user = userAnchor.innerHTML;
-				const taxonParts = taxonAnchor.href.split('/')
-				const taxonId = taxonParts[taxonParts.length - 1];
-				const url = `https://api.inaturalist.org/v1/identifications/categories?user_login=${user}&taxon_id=${taxonId}`;
+	async function enhanceIdentifierStats(div) {
+		if (!div || div.dataset.inatIdentifierStatsLoaded === 'true') return;
+		if (shouldDeferFastIdentifyEnhancements()) return;
 
-				const key = `inat-userstats-${user}-${taxonId}`;
-				let data = await window.iNatCache.read(key);
-				if (!data) {
-					const response = await fetch(url);
-					data = await response.json();
-					await window.iNatCache.write(key, data);
-				}
+		const userAnchor = div.querySelector('a.user');
+		const taxonAnchor = div.querySelector('.taxon > a');
+		if (!userAnchor || !taxonAnchor) return;
+		div.dataset.inatIdentifierStatsLoaded = 'true';
 
-				if (data && data.results && data.results.length) {
-					const leading = data.results.find(c => c.category === 'leading');
-					const improving = data.results.find(c => c.category === 'improving');
-					const supporting = data.results.find(c => c.category === 'supporting');
-					const maverick = data.results.find(c => c.category === 'maverick');
-					const leadingCount = leading ? leading.count : 0;
-					const improvingCount = improving ? improving.count : 0;
-					const supportingCount = supporting ? supporting.count : 0;
-					const maverickCount = maverick ? maverick.count : 0;
-					const span = div.querySelector('span.title_text');
-					if (span) {
-						const title = `Leading: ${leadingCount}&#010;Improving: ${improvingCount}&#010;Supporting: ${supportingCount}&#010;Maverick: ${maverickCount}`;
-						const countMarkup = `<span title="${title}">(${leadingCount + improvingCount})</span>`;
-						span.innerHTML = span.innerHTML.replace('</a>', `</a> ${countMarkup}`);
-					}
-				}
+		const user = userAnchor.innerHTML;
+		const taxonParts = taxonAnchor.href.split('/');
+		const taxonId = taxonParts[taxonParts.length - 1];
+		const url = `https://api.inaturalist.org/v1/identifications/categories?user_login=${user}&taxon_id=${taxonId}`;
+
+		const key = `inat-userstats-${user}-${taxonId}`;
+		let data = await window.iNatCache.read(key);
+		if (!data) {
+			const response = await fetch(url);
+			data = await response.json();
+			await window.iNatCache.write(key, data);
+		}
+
+		if (!div.isConnected || shouldDeferFastIdentifyEnhancements()) {
+			delete div.dataset.inatIdentifierStatsLoaded;
+			return;
+		}
+
+		if (data && data.results && data.results.length) {
+			const leading = data.results.find(c => c.category === 'leading');
+			const improving = data.results.find(c => c.category === 'improving');
+			const supporting = data.results.find(c => c.category === 'supporting');
+			const maverick = data.results.find(c => c.category === 'maverick');
+			const leadingCount = leading ? leading.count : 0;
+			const improvingCount = improving ? improving.count : 0;
+			const supportingCount = supporting ? supporting.count : 0;
+			const maverickCount = maverick ? maverick.count : 0;
+			const span = div.querySelector('span.title_text');
+			if (span && !span.querySelector('.inat-identifier-stats')) {
+				const title = `Leading: ${leadingCount}&#010;Improving: ${improvingCount}&#010;Supporting: ${supportingCount}&#010;Maverick: ${maverickCount}`;
+				const countMarkup = `<span class="inat-identifier-stats" title="${title}">(${leadingCount + improvingCount})</span>`;
+				span.innerHTML = span.innerHTML.replace('</a>', `</a> ${countMarkup}`);
 			}
-		})
+		}
+	}
+
+	if (items.enableIdentifierStats) {
+		document.arrive('.ActivityItem.identification', enhanceIdentifierStats);
+		refreshIdentifierStats = () => {
+			if (shouldDeferFastIdentifyEnhancements()) return;
+			document.querySelectorAll('.ActivityItem.identification').forEach(enhanceIdentifierStats);
+		};
 	}
 
 
 	let location;
-	let currentTaxon = null;
-	let currentSpeciesGuess = null;
 	let computerVisionResults = new Map();
 	const hierarchyTaxaCache = new Map();
 
@@ -100,10 +228,336 @@ chrome.storage.sync.get({
 		document.head.appendChild(style);
 	}
 
+	function injectIdentifyPhotoStyles() {
+		if (document.getElementById('inat-identify-photo-styles')) return;
+		const style = document.createElement('style');
+		style.id = 'inat-identify-photo-styles';
+		style.textContent = `
+			#Identify .ObservationsGridItem a.media.photo span.photo-count {
+				display: inline-flex !important;
+				align-items: center !important;
+				justify-content: center !important;
+				gap: 4px !important;
+				min-width: 38px !important;
+				height: 20px !important;
+				box-sizing: border-box !important;
+				padding: 3px 6px !important;
+				white-space: nowrap !important;
+				border: 1px solid rgba(255, 255, 255, 0.95) !important;
+				border-radius: 4px !important;
+				background: rgba(20, 30, 40, 0.82) !important;
+				color: #fff !important;
+				font-size: 12px !important;
+				font-weight: 700 !important;
+				line-height: 1 !important;
+				text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35) !important;
+			}
+			#Identify .ObservationsGridItem a.media.photo span.photo-count::before {
+				content: '\\f03e';
+				font-family: FontAwesome !important;
+				font-size: 11px !important;
+				font-weight: 400 !important;
+				flex: 0 0 auto !important;
+			}
+			.ObservationModal .obs-media .image-gallery {
+				position: relative;
+			}
+			.ObservationModal .inat-identify-photo-count {
+				position: absolute;
+				top: 10px;
+				left: 10px;
+				z-index: 20;
+				display: inline-flex;
+				align-items: center;
+				gap: 5px;
+				padding: 4px 8px;
+				border: 1px solid rgba(255, 255, 255, 0.9);
+				border-radius: 4px;
+				background: rgba(20, 30, 40, 0.78);
+				color: #fff;
+				font-size: 12px;
+				font-weight: 700;
+				line-height: 1;
+				pointer-events: none;
+				text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+			}
+			.ObservationModal .inat-identify-photo-count-icon {
+				font-family: FontAwesome;
+				font-size: 11px;
+				font-weight: 400;
+			}
+		`;
+		document.head.appendChild(style);
+	}
+
+	function normalizeIdentifyPhotoCountBadge(badge) {
+		const count = Number.parseInt(badge?.textContent?.trim(), 10);
+		if (!badge || !Number.isFinite(count) || count < 1) return;
+		const label = `${count} photo${count === 1 ? '' : 's'}`;
+		badge.title = label;
+		badge.setAttribute('aria-label', label);
+	}
+
+	function updateIdentifyPhotoCount(modal) {
+		const media = modal?.querySelector('.obs-media');
+		if (!media) return;
+		const slides = Array.from(media.querySelectorAll('.image-gallery-slide'));
+		const thumbnails = media.querySelectorAll('.image-gallery-thumbnail');
+		const total = Math.max(slides.length, thumbnails.length);
+		let badge = media.querySelector('.inat-identify-photo-count');
+		if (!total) {
+			badge?.remove();
+			return;
+		}
+
+		if (!badge) {
+			badge = document.createElement('div');
+			badge.className = 'inat-identify-photo-count';
+			badge.setAttribute('role', 'status');
+			media.querySelector('.image-gallery')?.appendChild(badge);
+		}
+		const activeSlide = media.querySelector('.image-gallery-slide.center')
+			|| media.querySelector('.image-gallery-slide[aria-hidden="false"]');
+		const activeIndex = Math.max(0, slides.indexOf(activeSlide));
+		badge.replaceChildren();
+		const icon = document.createElement('span');
+		icon.className = 'inat-identify-photo-count-icon';
+		icon.setAttribute('aria-hidden', 'true');
+		icon.textContent = String.fromCharCode(0xf03e);
+		const label = document.createElement('span');
+		label.textContent = `${activeIndex + 1} / ${total}`;
+		badge.append(icon, label);
+		badge.setAttribute('aria-label', `Photo ${activeIndex + 1} of ${total}`);
+	}
+
+	function enableIdentifyPhotoBadges() {
+		injectIdentifyPhotoStyles();
+		document.arrive('#Identify .ObservationsGridItem .photo-count', { existing: true }, function() {
+			normalizeIdentifyPhotoCountBadge(this);
+		});
+		document.arrive('.ObservationModal .obs-media', { existing: true }, function() {
+			if (identifyFastReview) {
+				updateIdentifyPhotoCount(this.closest('.ObservationModal'));
+				return;
+			}
+			if (this.dataset.inatPhotoBadgeObserved === 'true') {
+				updateIdentifyPhotoCount(this.closest('.ObservationModal'));
+				return;
+			}
+			this.dataset.inatPhotoBadgeObserved = 'true';
+			const modal = this.closest('.ObservationModal');
+			const observer = new MutationObserver(mutations => {
+				if (mutations.some(mutation => !mutation.target.closest?.('.inat-identify-photo-count'))) {
+					updateIdentifyPhotoCount(modal);
+				}
+			});
+			observer.observe(this, {
+				childList: true,
+				subtree: true,
+				attributes: true,
+				attributeFilter: ['class', 'aria-hidden']
+			});
+			updateIdentifyPhotoCount(modal);
+		});
+	}
+
 	injectHierarchyStyles();
 
 	if (window.location.pathname === '/observations/identify') {
+		enableIdentifyPhotoBadges();
 		if (items.enableIdentifyAutoPaging) enableIdentifyAutoPaging();
+		if (identifyFastReview) enableIdentifyFastReview();
+	}
+
+	function enableIdentifyFastReview() {
+		const root = document.documentElement;
+
+		let prefetchedObservationId = null;
+		let prefetchedImage = null;
+		let prefetchTimer = null;
+		const getModalObservationId = () => {
+			const modal = document.querySelector('.ObservationModal.in, .ObservationModal');
+			const href = modal?.querySelector(
+				'.obs-modal-header a[href^="/observations/"], a.permalink[href^="/observations/"]'
+			)?.getAttribute('href');
+			const match = href?.match(/^\/observations\/([^/?#]+)/);
+			return match ? match[1] : null;
+		};
+		const getBackgroundImageUrl = element => {
+			const backgroundImage = element?.style?.backgroundImage || '';
+			const match = backgroundImage.match(/url\(\s*(["']?)(.*?)\1\s*\)/i);
+			return match ? match[2] : null;
+		};
+		const prefetchNextIdentifyPhoto = () => {
+			const currentObservationId = getModalObservationId();
+			if (!currentObservationId) return;
+			const cards = Array.from(document.querySelectorAll('#Identify .ObservationsGridItem'));
+			const currentIndex = cards.findIndex(card => (
+				card.querySelector('a[href^="/observations/"]')?.getAttribute('href')
+					?.match(/^\/observations\/([^/?#]+)/)?.[1] === currentObservationId
+			));
+			const nextCard = currentIndex >= 0 ? cards[currentIndex + 1] : null;
+			const nextLink = nextCard?.querySelector('a.media.photo[href^="/observations/"]');
+			const nextObservationId = nextLink?.getAttribute('href')?.match(/^\/observations\/([^/?#]+)/)?.[1];
+			const thumbnailUrl = getBackgroundImageUrl(nextLink);
+			if (!nextObservationId || !thumbnailUrl || nextObservationId === prefetchedObservationId) return;
+
+			// Identify cards expose a small/medium background while the modal uses
+			// medium/large. Reuse the modal's current size so the prefetched URL can
+			// satisfy the gallery request from the browser cache.
+			const currentImageUrl = document.querySelector('.ObservationModal .image-gallery-image img')?.currentSrc
+				|| document.querySelector('.ObservationModal .image-gallery-image img')?.src
+				|| '';
+			const size = currentImageUrl.match(/\/(small|medium|large|original)(?=\.[^/?#]+)/i)?.[1] || 'medium';
+			const photoUrl = thumbnailUrl.replace(/\/(square|small|medium|large|original)(?=\.[^/?#]+)/i, `/${size}`);
+			if (!/^https:\/\//i.test(photoUrl)) return;
+
+			if (prefetchedImage) prefetchedImage.src = '';
+			prefetchedObservationId = nextObservationId;
+			prefetchedImage = new Image();
+			prefetchedImage.decoding = 'async';
+			if ('fetchPriority' in prefetchedImage) prefetchedImage.fetchPriority = 'low';
+			prefetchedImage.src = photoUrl;
+		};
+		const scheduleNextPhotoPrefetch = () => {
+			clearTimeout(prefetchTimer);
+			prefetchTimer = setTimeout(() => {
+				prefetchTimer = null;
+				prefetchNextIdentifyPhoto();
+			}, 500);
+		};
+
+		// Keep inactive gallery slides from downloading their full-size sources while
+		// the reviewer is moving through observations. The native gallery creates all
+		// slide images at once, so loading/fetchPriority hints alone still allow every
+		// large S3 image to start downloading.
+		const EMPTY_IMAGE_SRC = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+		const ORIGINAL_SRC_KEY = 'inatFastOriginalSrc';
+		const ORIGINAL_SRCSET_KEY = 'inatFastOriginalSrcset';
+		let optimizeFrame = null;
+		const isActiveGalleryImage = (image, index) => {
+			const slide = image.closest('.image-gallery-slide');
+			return slide?.classList.contains('center')
+				|| slide?.getAttribute('aria-hidden') === 'false'
+				|| (!slide && index === 0);
+		};
+		const restoreGalleryImage = image => {
+			const originalSrc = image.dataset[ORIGINAL_SRC_KEY];
+			const originalSrcset = image.dataset[ORIGINAL_SRCSET_KEY];
+			const currentSrc = image.getAttribute('src');
+			if (currentSrc === EMPTY_IMAGE_SRC && originalSrc) {
+				image.setAttribute('src', originalSrc);
+			}
+			if (!image.hasAttribute('src') && !originalSrc) {
+				delete image.dataset[ORIGINAL_SRC_KEY];
+			}
+			if (originalSrcset && !image.hasAttribute('srcset')) {
+				image.setAttribute('srcset', originalSrcset);
+			}
+			delete image.dataset[ORIGINAL_SRC_KEY];
+			delete image.dataset[ORIGINAL_SRCSET_KEY];
+		};
+		const restoreIdentifyThumbnails = () => {
+			const modal = document.querySelector('.ObservationModal.in, .ObservationModal');
+			if (!modal) return;
+			// Taxon images in existing identifications are not gallery slides, but
+			// they can be created while detached and caught by the page-world
+			// download guard. Restore them as soon as they enter the modal.
+			modal.querySelectorAll(
+				'img.taxon-image[data-inat-fast-original-src], '
+				+ 'img.inat-quick-add-thumb[data-inat-fast-original-src], '
+				+ '.image-gallery-thumbnail img[data-inat-fast-original-src]'
+			).forEach(restoreGalleryImage);
+		};
+		const deferGalleryImage = image => {
+			const currentSrc = image.getAttribute('src');
+			const currentSrcset = image.getAttribute('srcset');
+			if (currentSrc && currentSrc !== EMPTY_IMAGE_SRC) {
+				image.dataset[ORIGINAL_SRC_KEY] = currentSrc;
+			}
+			if (currentSrcset) {
+				image.dataset[ORIGINAL_SRCSET_KEY] = currentSrcset;
+			}
+			if (currentSrc && currentSrc !== EMPTY_IMAGE_SRC) {
+				image.setAttribute('src', EMPTY_IMAGE_SRC);
+			}
+			if (image.hasAttribute('srcset')) {
+				image.removeAttribute('srcset');
+			}
+		};
+		const optimizeModalImages = () => {
+			optimizeFrame = null;
+			const modal = document.querySelector('.ObservationModal.in, .ObservationModal');
+			if (!modal) return;
+			updateIdentifyPhotoCount(modal);
+			restoreIdentifyThumbnails();
+			if (!shouldDeferFastIdentifyEnhancements()) {
+				modal.querySelectorAll('.obs-media .image-gallery-slide img').forEach(image => {
+					restoreGalleryImage(image);
+					image.loading = 'eager';
+					image.decoding = 'auto';
+					if ('fetchPriority' in image) image.fetchPriority = 'auto';
+				});
+				return;
+			}
+			modal.querySelectorAll('.obs-media .image-gallery-slide img').forEach((image, index) => {
+				const isActive = isActiveGalleryImage(image, index);
+				image.loading = isActive ? 'eager' : 'lazy';
+				image.decoding = 'async';
+				if ('fetchPriority' in image) {
+					image.fetchPriority = isActive ? 'high' : 'low';
+				}
+				if (isActive) {
+					restoreGalleryImage(image);
+				} else {
+					deferGalleryImage(image);
+				}
+			});
+		};
+		const scheduleImageOptimization = () => {
+			if (optimizeFrame !== null) return;
+			optimizeFrame = requestAnimationFrame(optimizeModalImages);
+		};
+		updateIdentifyFastReviewMode = () => {
+			if (root) root.classList.toggle('inat-fast-identify-review', shouldDeferFastIdentifyEnhancements());
+			scheduleImageOptimization();
+		};
+		updateIdentifyFastReviewMode();
+
+		document.arrive('.ObservationModal .obs-media', { existing: true }, function() {
+			if (this.dataset.inatFastReviewObserved === 'true') return;
+			this.dataset.inatFastReviewObserved = 'true';
+			new MutationObserver(scheduleImageOptimization).observe(this, {
+				childList: true,
+				subtree: true,
+				attributes: true,
+				attributeFilter: ['class', 'aria-hidden', 'src', 'srcset']
+			});
+			scheduleImageOptimization();
+			scheduleNextPhotoPrefetch();
+		});
+		document.arrive(
+			'.ObservationModal img.taxon-image, .ObservationModal img.inat-quick-add-thumb',
+			{ existing: true },
+			restoreGalleryImage
+		);
+		document.addEventListener('inatExtObservationChanging', scheduleImageOptimization);
+		document.addEventListener('observationFetch', () => {
+			scheduleImageOptimization();
+			scheduleNextPhotoPrefetch();
+		});
+
+		// content-visibility reduces paint/layout work for the map while preserving
+		// the native map and details when the reviewer scrolls to them.
+		const style = document.createElement('style');
+		style.id = 'inat-fast-identify-review-styles';
+		style.textContent = `
+			.inat-fast-identify-review .ObservationModal .map-and-details > .TaxonMap {
+				content-visibility: auto;
+				contain-intrinsic-size: 420px 220px;
+			}
+		`;
+		(document.head || root)?.appendChild(style);
 	}
 
 	function enableIdentifyAutoPaging() {
@@ -120,6 +574,27 @@ chrome.storage.sync.get({
 		let cooldownTimer = null;
 		let scrollFrame = null;
 		let paginationFrame = null;
+		let autoPagingWheelGuard = null;
+
+		const stopAutoPagingScrollGuard = () => {
+			if (!autoPagingWheelGuard) return;
+			window.removeEventListener('wheel', autoPagingWheelGuard);
+			autoPagingWheelGuard = null;
+		};
+
+		const startAutoPagingScrollGuard = () => {
+			if (autoPagingWheelGuard) return;
+			autoPagingWheelGuard = event => {
+				if (!loadingPage || pageLoaded || event.deltaY <= 0) return;
+				event.preventDefault();
+				const scrollingElement = document.scrollingElement || document.documentElement;
+				const bottom = Math.max(0, scrollingElement.scrollHeight - window.innerHeight);
+				window.scrollTo({ top: bottom, left: 0, behavior: 'auto' });
+			};
+			// This listener is installed only during the short native page-swap
+			// transition. Normal Identify scrolling remains passive.
+			window.addEventListener('wheel', autoPagingWheelGuard, { passive: false });
+		};
 
 		const startCooldown = pagination => {
 			clearTimeout(cooldownTimer);
@@ -155,7 +630,8 @@ chrome.storage.sync.get({
 			const pagination = observedPagination || document.querySelector('.PaginationControl .rc-pagination:not(.collapse)');
 			if (!pagination) return;
 
-			const reachesBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 20;
+			const scrollingElement = document.scrollingElement || document.documentElement;
+			const reachesBottom = window.scrollY + window.innerHeight >= scrollingElement.scrollHeight - 20;
 			if (!reachesBottom) return;
 
 			const currentPage = getCurrentIdentifyPage(pagination);
@@ -169,12 +645,15 @@ chrome.storage.sync.get({
 
 			showAutoPagingOverlay('Loading next page...');
 			showAutoPagingStatus(pagination, 'Loading next page...');
+			startAutoPagingScrollGuard();
 			nextItem.click();
 
 			clearTimeout(fallbackTimer);
 			fallbackTimer = setTimeout(() => {
 				loadingPage = false;
 				lastTriggeredPage = null;
+				clearTimeout(debounceTimer);
+				stopAutoPagingScrollGuard();
 				hideAutoPagingOverlay();
 				clearCooldown();
 				if (observedPagination) {
@@ -199,7 +678,9 @@ chrome.storage.sync.get({
 			if (pagination !== observedPagination) {
 				observedPagination = pagination;
 				showAutoPagingStatus(pagination, cooldownActive ? `Auto-paging cooldown: ${cooldownSecondsLeft + 1}s` : 'Scroll beyond the bottom to load the next page');
-				lastActivePage = getCurrentIdentifyPage(pagination);
+				// Keep the previous page marker across React pagination-node
+				// replacement so a manual or automatic page change is still seen.
+				if (lastActivePage === null) lastActivePage = getCurrentIdentifyPage(pagination);
 			}
 
 			const currentPage = getCurrentIdentifyPage(pagination);
@@ -209,10 +690,15 @@ chrome.storage.sync.get({
 			if (currentPage && currentPage !== lastActivePage) {
 				if (loadingPage && !pageLoaded) {
 					// Auto-paging change detected, but we wait for observations to actually load
-					if (currentGridSignature !== lastGridSignature) {
+						if (currentGridSignature && currentGridSignature !== lastGridSignature) {
 						pageLoaded = true;
 						clearTimeout(fallbackTimer);
 						hideAutoPagingOverlay();
+						// The old grid can leave the browser's scroll position beyond the
+						// new document height. Reset immediately after the replacement
+						// grid appears so auto-next cannot strand the reviewer past the
+						// footer or trigger another page from layout churn.
+						window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
 
 						// Release lock only after 150ms of scroll inactivity
 						clearTimeout(debounceTimer);
@@ -220,6 +706,7 @@ chrome.storage.sync.get({
 							loadingPage = false;
 							lastTriggeredPage = null;
 							pageLoaded = false;
+							stopAutoPagingScrollGuard();
 							startCooldown(pagination);
 						}, 150);
 						lastActivePage = currentPage;
@@ -333,12 +820,23 @@ chrome.storage.sync.get({
 		if (overlay) overlay.style.display = 'none';
 	}
 
-	document.addEventListener('observationFetch', event => {
+	handleObservationFetch = event => {
 		log('observationFetch handler', event.detail);
 
 		const obs = event.detail?.observation;
+		currentIdentifyObservationId = event.detail?.observationId || obs?.id || null;
 		currentTaxon = obs ? (obs.taxon || null) : null;
 		currentSpeciesGuess = obs ? (obs.species_guess || null) : null;
+		currentIdentifyObservationState = obs
+			? (obs.taxon ? 'identified' : 'unknown')
+			: 'pending';
+		updateIdentifyFastReviewMode();
+		refreshIdentifierStats();
+		if (shouldShowMainCvHierarchy()) {
+			refreshIdentifyColorization();
+		} else {
+			clearMainSuggestionHierarchies();
+		}
 		if (items.enableQuickPlant) {
 			updateQuickPlantVisibility();
 		}
@@ -379,9 +877,31 @@ chrome.storage.sync.get({
 				}
 			}
 		}
-	});
+	};
+	if (bufferedObservationFetchEvent) {
+		const event = bufferedObservationFetchEvent;
+		bufferedObservationFetchEvent = null;
+		handleObservationFetch(event);
+	}
 
-	// cache the CV response for a photo
+	// The modal swaps observations before the full observationFetch response
+	// arrives. Clear extension-owned draft UI immediately so the previous
+	// observation's placeholder cannot remain visible during that gap.
+	handleObservationChanging = () => {
+		clearQuickPlantPlaceholderDisplay();
+		clearMainSuggestionHierarchies();
+		computerVisionResults.delete(DEFAULT_KEY_NAME);
+		currentIdentifyObservationId = null;
+		currentTaxon = null;
+		currentSpeciesGuess = null;
+		currentIdentifyObservationState = 'pending';
+		updateIdentifyFastReviewMode();
+		if (items.enableQuickPlant) updateQuickPlantVisibility();
+	};
+
+	// Cache the lightweight CV response even in fast review. The expensive
+	// autocomplete decoration remains deferred until an identified observation
+	// is active, so identified observations can still recover the original UI.
 	document.addEventListener('computerVisionResponse', event => {
 		log('computerVisionResponse handler', event.detail);
 
@@ -392,23 +912,39 @@ chrome.storage.sync.get({
 				logDebug('key', key);
 
 				computerVisionResults.set(key, detail.data);
+				// The suggestion menu can mount before the CV response arrives.
+				// Replay the lightweight row/hierarchy pass only for
+				// identified/normal observations; unknown fast review deliberately
+				// has no hierarchy work.
+				if (shouldShowMainCvHierarchy()) {
+					refreshIdentifyColorization();
+				} else {
+					clearMainSuggestionHierarchies();
+				}
 			}
 		}
 	});
 
 	// colorization
+	const identifyColorizationRefreshers = new Set();
+	refreshIdentifyColorization = () => {
+		identifyColorizationRefreshers.forEach(refresh => refresh());
+	};
+	function clearMainSuggestionHierarchies() {
+		document.querySelectorAll('.inat-main-cv-hierarchy').forEach(element => element.remove());
+	}
 	document.arrive('ul.ui-autocomplete.taxon-autocomplete', ul => {
-		// Ignore autocompletes belonging to filter popovers (e.g., Suggestions tab filters)
-		if (ul.closest('.TaxonChooserPopover, .RecordChooserPopover, .popover, .filters, #suggestions-taxon-chooser')) {
-			return;
-		}
+			// Ignore autocompletes belonging to filter popovers (e.g., Suggestions tab filters)
+			if (ul.closest('.TaxonChooserPopover, .RecordChooserPopover, .popover, .filters, #suggestions-taxon-chooser')) {
+				return;
+			}
 
 		let isModifying = false;
 
-		// triggered when the subtree changes, i.e. the CV rows are created, or classes are added/removed
-		function observeCallback(mutations) {
-			if (isModifying) return;
-			isModifying = true;
+			// triggered when the subtree changes, i.e. the CV rows are created, or classes are added/removed
+			function observeCallback(mutations) {
+				if (isModifying) return;
+				isModifying = true;
 			try {
 				for (const mutation of mutations) {
 					const element = mutation.target;
@@ -458,7 +994,10 @@ chrome.storage.sync.get({
 									score = computerVision.common_ancestor.score;
 								}
 
-								if (score) {
+								// Keep the CV hierarchy rows available during fast review. The
+								// expensive colour/sidebar and percentage work remains deferred
+								// until an identified observation is active.
+								if (score && !shouldDeferFastIdentifyEnhancements()) {
 									let hue = score * 1.2;
 									chrome.storage.sync.get({
 										enableColorVision: true,
@@ -531,9 +1070,10 @@ chrome.storage.sync.get({
 									});
 								}
 
-								if (
-									computerVision.common_ancestor?.taxon
-									&& computerVision.common_ancestor.taxon.id == taxonId
+				if (
+					shouldShowMainCvHierarchy()
+					&& computerVision.common_ancestor?.taxon
+					&& computerVision.common_ancestor.taxon.id == taxonId
 								) {
 									addMainSuggestionHierarchy(div, computerVision.common_ancestor.taxon);
 								}
@@ -567,14 +1107,22 @@ chrome.storage.sync.get({
 			attributeOldValue: true
 		};
 
-		observer.observe(ul, options);
-	});
+			observer.observe(ul, options);
+			identifyColorizationRefreshers.add(() => {
+				if (ul.isConnected) observeCallback([{ type: 'childList', target: ul }]);
+			});
+		});
 
 	async function addMainSuggestionHierarchy(row, compactTaxon) {
-		if (row.querySelector('.inat-main-cv-hierarchy')) return;
+		const taxonKey = compactTaxon?.id == null ? '' : String(compactTaxon.id);
+		const observationId = currentIdentifyObservationId;
+		const existingHierarchy = row.querySelector('.inat-main-cv-hierarchy');
+		if (existingHierarchy?.dataset.inatTaxonId === taxonKey) return;
+		if (existingHierarchy) existingHierarchy.remove();
 
 		const hierarchy = document.createElement('div');
 		hierarchy.className = 'inat-main-cv-hierarchy';
+		hierarchy.dataset.inatTaxonId = taxonKey;
 		hierarchy.innerHTML = '<span class="inat-main-cv-hierarchy-loading">Loading classification...</span>';
 		hierarchy.addEventListener('click', event => event.stopPropagation());
 		row.style.flexWrap = 'wrap';
@@ -585,7 +1133,10 @@ chrome.storage.sync.get({
 			const taxonIds = [...(fullTaxon.ancestor_ids || []), fullTaxon.id];
 			const missingIds = taxonIds.filter(id => !hierarchyTaxaCache.has(String(id)));
 			if (missingIds.length) await fetchTaxa(missingIds);
-			if (!hierarchy.isConnected) return;
+			if (!hierarchy.isConnected
+				|| !shouldShowMainCvHierarchy()
+				|| String(currentIdentifyObservationId || '') !== String(observationId || '')
+				|| row.querySelector('.inat-main-cv-hierarchy') !== hierarchy) return;
 
 			const taxa = taxonIds
 				.map(id => hierarchyTaxaCache.get(String(id)))
@@ -675,10 +1226,26 @@ chrome.storage.sync.get({
 		return element.innerHTML;
 	}
 
+	function shouldShowQuickIdControls() {
+		return currentIdentifyObservationState === 'unknown';
+	}
+
+	function clearQuickPlantPlaceholderDisplay() {
+		document.querySelectorAll('.inat-quick-add-container').forEach(container => {
+			const labelEl = container.querySelector('.inat-quick-add-placeholder-label');
+			const containerEl = container.querySelector('.inat-quick-add-placeholder-wrapper-container');
+			const valEl = container.querySelector('.inat-quick-add-placeholder-value');
+			if (valEl) valEl.textContent = '';
+			labelEl?.style.setProperty('display', 'none', 'important');
+			containerEl?.style.setProperty('display', 'none', 'important');
+		});
+	}
+
 	function updateQuickPlantVisibility() {
 		const containers = document.querySelectorAll('.inat-quick-add-container');
+		const showQuickId = shouldShowQuickIdControls();
 		for (const container of containers) {
-			if (currentTaxon === null) {
+			if (showQuickId) {
 				container.style.setProperty('display', 'grid', 'important');
 			} else {
 				container.style.setProperty('display', 'none', 'important');
@@ -690,13 +1257,14 @@ chrome.storage.sync.get({
 			const valEl = container.querySelector('.inat-quick-add-placeholder-value');
 			
 			if (labelEl && containerEl && valEl) {
-				if (currentSpeciesGuess) {
+				if (showQuickId && currentSpeciesGuess) {
 					labelEl.style.setProperty('display', 'inline-block', 'important');
 					containerEl.style.setProperty('display', 'flex', 'important');
 					valEl.textContent = currentSpeciesGuess;
 				} else {
 					labelEl.style.setProperty('display', 'none', 'important');
 					containerEl.style.setProperty('display', 'none', 'important');
+					valEl.textContent = '';
 				}
 			}
 		}
@@ -709,6 +1277,24 @@ chrome.storage.sync.get({
 			label: 'Vascular Plants',
 			taxon: { id: 211194, name: 'Tracheophyta', preferred_common_name: 'Vascular Plants', rank: 'phylum', iconic_taxon_name: 'Plantae' },
 			accent: { bg: '#f0f7e6', border: '#a4d257', hoverBg: '#e2f0cc', hoverBorder: '#7db53a', text: '#3d6b00' }
+		},
+		{
+			photoUrl: 'https://static.inaturalist.org/photos/4608305/square.jpeg',
+			label: 'Nightshades',
+			taxon: { id: 48516, name: 'Solanaceae', preferred_common_name: 'nightshade family', rank: 'family', iconic_taxon_name: 'Plantae' },
+			accent: { bg: '#f2eef9', border: '#b9a5d8', hoverBg: '#e8def3', hoverBorder: '#9678c1', text: '#5a3e7d' }
+		},
+		{
+			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/149905022/square.jpg',
+			label: 'Morning Glories',
+			taxon: { id: 52346, name: 'Ipomoea', preferred_common_name: 'morning-glories', rank: 'genus', iconic_taxon_name: 'Plantae' },
+			accent: { bg: '#eef1fb', border: '#a8b6e2', hoverBg: '#e0e6f7', hoverBorder: '#8195d0', text: '#3e518b' }
+		},
+		{
+			photoUrl: 'https://static.inaturalist.org/photos/247609877/square.jpg',
+			label: 'Gastropods',
+			taxon: { id: 47114, name: 'Gastropoda', preferred_common_name: 'Gastropods', rank: 'class', iconic_taxon_name: 'Mollusca' },
+			accent: { bg: '#f5eee8', border: '#c99d79', hoverBg: '#eee0d3', hoverBorder: '#aa754e', text: '#704526' }
 		},
 		{
 			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/54589881/square.jpg',
@@ -854,10 +1440,10 @@ chrome.storage.sync.get({
 			placeholderWrapper.addEventListener('click', copyAction);
 
 			// Set initial visibility of wrapper
-			wrapper.style.setProperty('display', currentTaxon === null ? 'grid' : 'none', 'important');
+			wrapper.style.setProperty('display', shouldShowQuickIdControls() ? 'grid' : 'none', 'important');
 
 			// Set initial visibility and content of placeholder section
-			if (currentSpeciesGuess) {
+			if (shouldShowQuickIdControls() && currentSpeciesGuess) {
 				placeholderLabel.style.setProperty('display', 'inline-block', 'important');
 				placeholderWrapperContainer.style.setProperty('display', 'flex', 'important');
 				placeholderVal.textContent = currentSpeciesGuess;
@@ -873,6 +1459,28 @@ chrome.storage.sync.get({
 	if (items.enableQuickPlant) {
 		setupQuickPlant();
 	}
+
+	// A modal can be restored from iNaturalist's client cache without producing a
+	// fetch response for the page-world bridge. Observe its identity and resolve
+	// the observation only while the extension state is still pending.
+	document.arrive('.ObservationModal', { existing: true }, function() {
+		if (this.dataset.inatObservationFallbackObserved === 'true') return;
+		this.dataset.inatObservationFallbackObserved = 'true';
+		let lastObservationId = getCurrentModalObservationId();
+		scheduleObservationStateFallback();
+		new MutationObserver(() => {
+			const observationId = getCurrentModalObservationId();
+			if (observationId && observationId !== lastObservationId) {
+				lastObservationId = observationId;
+				if (String(currentIdentifyObservationId || '') !== String(observationId)) {
+					document.dispatchEvent(new CustomEvent('inatExtObservationChanging', {
+						detail: { observationId }
+					}));
+				}
+				scheduleObservationStateFallback();
+			}
+		}).observe(this, { childList: true, subtree: true, attributes: true, attributeFilter: ['href'] });
+	});
 
 
 	chrome.storage.sync.get({
