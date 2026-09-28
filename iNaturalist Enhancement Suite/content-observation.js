@@ -1285,10 +1285,28 @@ chrome.storage.sync.get({
 			accent: { bg: '#f2eef9', border: '#b9a5d8', hoverBg: '#e8def3', hoverBorder: '#9678c1', text: '#5a3e7d' }
 		},
 		{
+			photoUrl: 'https://static.inaturalist.org/photos/5299629/square.jpeg',
+			label: 'Solanum',
+			taxon: { id: 50641, name: 'Solanum', preferred_common_name: 'nightshades', rank: 'genus', iconic_taxon_name: 'Plantae' },
+			accent: { bg: '#f0ebf7', border: '#ab94cc', hoverBg: '#e5daf2', hoverBorder: '#896cb6', text: '#503578' }
+		},
+		{
 			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/149905022/square.jpg',
 			label: 'Morning Glories',
 			taxon: { id: 52346, name: 'Ipomoea', preferred_common_name: 'morning-glories', rank: 'genus', iconic_taxon_name: 'Plantae' },
 			accent: { bg: '#eef1fb', border: '#a8b6e2', hoverBg: '#e0e6f7', hoverBorder: '#8195d0', text: '#3e518b' }
+		},
+		{
+			photoUrl: 'https://static.inaturalist.org/photos/16073996/square.jpg',
+			label: 'Hibiscus',
+			taxon: { id: 48891, name: 'Hibiscus', preferred_common_name: 'hibiscuses', rank: 'genus', iconic_taxon_name: 'Plantae' },
+			accent: { bg: '#fceef2', border: '#dba3b4', hoverBg: '#f8dfe7', hoverBorder: '#c77f98', text: '#81364f' }
+		},
+		{
+			photoUrl: 'https://inaturalist-open-data.s3.amazonaws.com/photos/81901184/square.jpeg',
+			label: 'Wild Coffees',
+			taxon: { id: 51600, name: 'Psychotria', preferred_common_name: 'wild coffees', rank: 'genus', iconic_taxon_name: 'Plantae' },
+			accent: { bg: '#edf5ec', border: '#9bc69b', hoverBg: '#dcefd9', hoverBorder: '#73aa78', text: '#35633c' }
 		},
 		{
 			photoUrl: 'https://static.inaturalist.org/photos/247609877/square.jpg',

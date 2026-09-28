@@ -58,4 +58,18 @@ assert.strictEqual(ipomoea.taxon.preferred_common_name, 'morning-glories', 'Pref
 assert.strictEqual(ipomoea.taxon.iconic_taxon_name, 'Plantae', 'Iconic taxon name must be "Plantae"');
 assert.ok(ipomoea.photoUrl.includes('149905022'), 'Photo URL should match Ipomoea default photo');
 
+for (const [id, name, label, commonName, photoId] of [
+    [51600, 'Psychotria', 'Wild Coffees', 'wild coffees', '81901184'],
+    [50641, 'Solanum', 'Solanum', 'nightshades', '5299629']
+]) {
+    const option = taxa.find(t => t.taxon?.id === id);
+    assert.ok(option, `${name} genus must be present in QUICK_ADD_TAXA`);
+    assert.strictEqual(option.label, label);
+    assert.strictEqual(option.taxon.name, name);
+    assert.strictEqual(option.taxon.rank, 'genus');
+    assert.strictEqual(option.taxon.preferred_common_name, commonName);
+    assert.strictEqual(option.taxon.iconic_taxon_name, 'Plantae');
+    assert.ok(option.photoUrl.includes(photoId), `${name} should use its iNaturalist default photo`);
+}
+
 console.log('✅ All Quick ID options regression tests passed successfully!');

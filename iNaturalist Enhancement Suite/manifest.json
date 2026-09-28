@@ -44,7 +44,8 @@
         "https://*.www.naturalista.uy/observations/*"
       ],
       "js": [
-        "domContext.js"
+        "domContext.js",
+        "identify-card-data.js"
       ],
       "run_at": "document_start",
       "world": "MAIN"
@@ -75,6 +76,7 @@
         "cropper.min.js",
         "crop-dataset.js",
         "content-observation.js",
+        "content-identify-cards.js",
         "content-score-crop.js",
         "content-identify-similar.js",
         "content-photos-tab.js"

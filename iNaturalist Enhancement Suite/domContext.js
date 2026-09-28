@@ -34,6 +34,13 @@ function isIdentifyPhotoSource(value) {
 	return typeof value === 'string' && identifyPhotoSourcePattern.test(value);
 }
 
+function isIdentifySuggestionsTabActive() {
+	const activeTab = document.querySelector(
+		'.ObservationModal .inat-tabs > li.active > button'
+	);
+	return activeTab?.textContent?.trim().toLowerCase() === 'suggestions';
+}
+
 function rememberIdentifyPhotoSource(image, attribute, value) {
 	if (!isIdentifyPhotoSource(value)) return;
 	if (attribute === 'src') image.dataset[IDENTIFY_ORIGINAL_SRC_KEY] = value;
@@ -42,6 +49,10 @@ function rememberIdentifyPhotoSource(image, attribute, value) {
 
 function shouldDeferIdentifyPhoto(image, value) {
 	if (window.location.pathname !== '/observations/identify' || !isIdentifyPhotoSource(value)) return false;
+	// Suggestions renders taxon photos through detached CoverImage preloaders.
+	// They are intentional content for the active tab, not inactive gallery
+	// slides, so let them load while the reviewer is looking at Suggestions.
+	if (isIdentifySuggestionsTabActive()) return false;
 	// These are UI thumbnails, not gallery slides. They must remain visible when
 	// a reviewer selects a quick ID or when an identification is rendered.
 	if (image.matches?.('.taxon-image, .inat-quick-add-thumb')

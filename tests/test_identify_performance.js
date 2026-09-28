@@ -55,6 +55,8 @@ assert.ok(!domContext.includes("setTimeout(() => {\n\t\ttextarea.dispatchEvent(n
 assert.ok(domContext.includes("requestUrl && /^https:\\/\\/api\\.inaturalist\\.org\\/v\\d+\\/(?:observations\\/|computervision)"), 'Fetch inspection must ignore unrelated page requests');
 assert.ok(domContext.includes('IDENTIFY_EMPTY_IMAGE_SRC'), 'Identify image requests must have a local placeholder available');
 assert.ok(domContext.includes('shouldDeferIdentifyPhoto'), 'Identify image deferral must be scoped to photo sources and the Identify route');
+assert.ok(domContext.includes('function isIdentifySuggestionsTabActive()'), 'Identify image deferral must recognize the active Suggestions tab');
+assert.ok(domContext.includes('if (isIdentifySuggestionsTabActive()) return false;'), 'Suggestions tab photos must not be replaced with the empty image');
 assert.ok(domContext.includes('Element.prototype.setAttribute'), 'Identify image deferral must cover React attribute assignment');
 assert.ok(domContext.includes('.taxon-image, .inat-quick-add-thumb'), 'Identify thumbnails must bypass gallery deferral');
 assert.ok(domContext.includes(".image-gallery-thumbnail"), 'Identify gallery thumbnails must remain available as low-cost navigation cues');
